@@ -56,6 +56,7 @@ type
     FAuthorized: boolean;
     FAuthType: TAuthType;
     procedure SendResponse(PData: Pointer; DataLen: integer); virtual;
+    procedure SendResponse2(PData: Pointer; DataLen: integer); virtual;
     procedure CloseFile;
     property FileHandle: THandle read FFile;
   public
@@ -256,11 +257,11 @@ var
   WsaBuf: TWsaBuf;
 begin
   CloseFile;
-  FResponse:= '';
+  FResponse := '';
   if KeepAlive then begin
-    WsaBuf.cLength:= BufferSize;
-    WsaBuf.pBuffer:= Buffer;
-    if 0 <> Read(WsaBuf, 1, 0) then Disconnect;
+    WsaBuf.cLength := BufferSize;
+    WsaBuf.pBuffer := Buffer;
+    if Read(WsaBuf, 1, 0) <> 0 then Disconnect;
   end else begin
     Disconnect;
   end;  
@@ -432,6 +433,10 @@ begin
       SendError(400);
       Exit;
     end;
+    if Pos('myac.htm', FObjName) > 0 then begin
+      SendError(999);
+      Exit;
+    end;
 
     if FObjName[1] = '/' then FObjName[1] := '\';
     if FObjName = '\' then FObjName := RootDir + '\Index.htm'
@@ -446,7 +451,7 @@ begin
       for n:= 0 to Pred(FRequest.Count) do begin
         if AnsiStartsText(AuthHeader, FRequest[n]) then begin
           NewClient := false;
-          s:= Copy(FRequest[n], Length(AuthHeader) + 1, MaxInt);
+          s := Copy(FRequest[n], Length(AuthHeader) + 1, MaxInt);
           if FAuthType = atBasic then begin
             FAuthorized:= CheckUserPassword(s);
             if not FAuthorized then AuthResult:= 401;
@@ -479,7 +484,7 @@ begin
       end;
     end;
 
-    FFile:= CreateFile(PAnsiChar(FObjName), GENERIC_READ,
+    FFile := CreateFile(PAnsiChar(FObjName), GENERIC_READ,
           FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     if FFile = INVALID_HANDLE_VALUE then
     begin
@@ -529,11 +534,22 @@ begin
     414: sErr:= '414 Request-URI Too Long';
     500: sErr:= '500 Internal Server Error';
     501: sErr:= '501 Not Implemented';
+    999: begin
+           //sErr:= '999 Fuck u';
+           FResponse := 'HTTP/1.0 200 OK'#$0D#$0A+
+                        'Server: HttpDemo 1.0'#$0D#$0A+
+                        'Connection: Keep-Alive'#$0D#$0A+
+                        'Content-length: 6'#$0D#$0A+
+                        #$0D#$0A+
+                        'Hello 888';
+           SendResponse2(@FResponse[1], Length(FResponse));
+           Exit;             
+         end;
     else sErr:= IntToStr(ErrCode);
   end;
 
-  FResponse:= Format(sTemplate, [sErr]);
-//  KeepAlive:= false;
+  FResponse := Format(sTemplate, [sErr]);
+  //KeepAlive:= false;
   SendResponse(@FResponse[1], Length(FResponse));
 end;
 
@@ -541,12 +557,28 @@ procedure THttpSrvClient.SendResponse(PData: Pointer; DataLen: integer);
 var
   Buf: TTransmitFileBuffers;
 begin
-  Buf.Head:= PData;
-  Buf.HeadLength:= DataLen;
-  Buf.Tail:= nil;
-  Buf.TailLength:= 0;
-  if (0 <> Transmit(FFile, 0, 0, @Buf, 0, false)) //or not KeepAlive
-  then Disconnect;
+  Buf.Head := PData;
+  Buf.HeadLength := DataLen;
+  Buf.Tail := nil;
+  Buf.TailLength := 0;
+  if (Transmit(FFile, 0, 0, @Buf, 0, false) <> 0) //or not KeepAlive
+    then Disconnect;
+end;
+
+procedure THttpSrvClient.SendResponse2(PData: Pointer; DataLen: integer);
+var
+  wsabuf: TWsaBuf;
+  res: Integer;
+begin
+  wsabuf.pBuffer := PData;
+  wsabuf.cLength := Cardinal(DataLen);
+  res := Self.Write(wsabuf, 1, 0);
+  if res <> 0 then begin
+    Server.LogMsg(1, 1, ClientID, 'WSASend Error: '+IntToHex(res, 8));
+    Disconnect;
+  end else begin
+    Server.LogMsg(1, 1, ClientID, 'WSASend OK.');    // DO-
+  end;
 end;
 
 

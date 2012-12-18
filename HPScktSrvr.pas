@@ -746,16 +746,16 @@ var
   hWS32: THandle;
 begin
   hWS32 := GetModuleHandle('wsock32.dll');
-  //@FAcceptEx := GetExtensionFunc(FListener, WSAID_ACCEPTEX);
-  //if not Assigned(FAcceptEx) then begin
+  @FAcceptEx := GetExtensionFunc(FListener, WSAID_ACCEPTEX);
+  if not Assigned(FAcceptEx) then begin
     @FAcceptEx := GetProcAddress(hWS32, 'AcceptEx');
     if not Assigned(FAcceptEx) then raise EHPServerException.Create(sAcceptExNotFound);
-  //end;
-  //@FGetAcceptExSockaddrs := GetExtensionFunc(FListener, WSAID_GETACCEPTEXSOCKADDRS);
-  //if not Assigned(FGetAcceptExSockaddrs) then begin
+  end;
+  @FGetAcceptExSockaddrs := GetExtensionFunc(FListener, WSAID_GETACCEPTEXSOCKADDRS);
+  if not Assigned(FGetAcceptExSockaddrs) then begin
     @FGetAcceptExSockaddrs := GetProcAddress(hWS32, 'GetAcceptExSockaddrs');
     if not Assigned(FGetAcceptExSockaddrs) then raise EHPServerException.Create(sGetAcceptExSockaddrsNotFound);
-  //end;
+  end;
   @FTransmitFile := GetExtensionFunc(FListener, WSAID_TRANSMITFILE);
   @FDisconnectEx := GetExtensionFunc(FListener, WSAID_DISCONNECTEX);
   FFullExtensionsSupport := Assigned(FTransmitFile) and Assigned(FDisconnectEx);
