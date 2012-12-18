@@ -1,0 +1,59 @@
+High performance socket server based on Windows Completion Port and with using Windows Socket Extensions. IPv6 supported.
+Version 1.4.
+
+Included two demo:
+1) Simple HTTP server what can work in HTTP and HTTP over SSL mode (HTTPS). SSL mode based on Windows SChannel provider and supports SSL 2.0, SSL 3.0 and TLS 1.0 protocols in any combinations.
+2) Simple Client/Server application used SSPI client authentication.
+
+{!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+                              W_A_R_N_I_N_G !
+
+-- Component THPServerSocketSPL provided ONLY AS EXAMPLE of using
+   "System Thread Pool" and NOT RECOMMENDED for practical use.
+   Use component THPServerSocket instead this.
+
+-- Directive "USE_SLIST" enabled using SList functions. These functions
+   available  only on Windows XP and higher versions. Do not define this
+   directive if You need to support Windows 2000.
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!}
+
+(*******************************************************************************
+
+Author: Sergey N. Naberegnyh
+
+Version 1.4.0.5
+Created: August, 05, 2008
+Updated: January, 31, 2009
+
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+November, 22, 2008:
+ Not raised TCustomHPServerSocket.OnCreateAcceptor - Fixed
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+December, 03, 2008
+- Included IPv6 support
+- Restructuring unit
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+December, 04, 2008
+- Support IPv6
+- Adedded property "MinimumAcceptors"
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+January, 23, 2009
+- Dynamic loading IPv6 functions for Win2k compatibility
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+January, 31, 2009
+- AcceptEx failed if function TransmitFile
+    with DisconnectClient = TRUE return error
+  Fixed:
+    1) Added "closesocket" in
+       THPServerWorkThread.Execute: HPSO_TRANSMIT_DISCONNECT block.
+    2) In TAcceptThread.Execute "Break" operator replaced to "Continue"
+       
+- Fixed: Memory leaks if failed THPServerClient.Read, Write and Transmit
+*******************************************************************************)
+
+Minimum OS: Windows 2000
+Recommended OS: WindowsXP SP2
+Demos required JEDI API Header Library
+( http://delphi-jedi.org/apilibrary.html )
