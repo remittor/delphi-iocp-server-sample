@@ -126,7 +126,7 @@ type
   PWsaBuf = ^TWsaBuf;
   TWsaBuf = packed record
     cLength: ULONG;
-    pBuffer: PByte;
+    pBuffer: PChar;
   end;
 
   TDisconnectEx         = function(Socket: TSocket; pOvp: POverlapped;
@@ -185,6 +185,7 @@ const
 
   procedure F_FreeAddrInfoW(pai: PAddrInfoW); stdcall; external WS2_32_LIB name 'FreeAddrInfoW';
 
+  // на wine всегда получаем Result = True; IOIsPending = False
   function F_GetThreadIOPendingFlag(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall; external kernel32 name 'GetThreadIOPendingFlag';
 
 {$ENDIF}
@@ -266,8 +267,8 @@ var
 begin
   Result := (@F_NtQueryInformationThread = nil);
   if Result then Exit;
-  Result := (F_NtQueryInformationThread(hThread, 16, Info, SizeOf(Info), @RetLen) = 0);
-  IOIsPending := (not Result) or (Info <> 0);
+  Result := (F_NtQueryInformationThread(hThread, 16, Info, SizeOf(Info), @RetLen) = 0);  // на wine всегда получаем 0xC0000002 
+  IOIsPending := (not Result) or (Info <> 0);            // на wine всегда получаем Result = False; IOIsPending = True
 end;
 {$ENDIF}
 

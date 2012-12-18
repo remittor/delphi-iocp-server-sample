@@ -35,13 +35,14 @@ type
 
   THttpSrvClient = class(THPServerClient)
   private
-    FClientID: Cardinal;
     FNotProcessed: integer;
     FCmdAccepted: boolean;
     FHttpMethod: THttpMethod;
-    FVersion, FObjName, FParams: AnsiString;
+    FVersion: String;
+    FObjName: String;
+    FParams: String;
     FRequest: TStringList;
-    FResponse: AnsiString;
+    FResponse: String;
     FFile: THandle;
     FkeepAlive: boolean;
 
@@ -60,7 +61,7 @@ type
     procedure CloseFile;
     property FileHandle: THandle read FFile;
   public
-    constructor Create(); override;
+    constructor Create; override;
     destructor Destroy; override;
     procedure Initialize; virtual;
     procedure Finalize; virtual;
@@ -68,11 +69,7 @@ type
     procedure ProcessBuffer(PBuf: PAnsiChar; BufLen: integer); virtual;
     property KeepAlive: boolean read FkeepAlive write FKeepAlive;
     property RequestHeader: TStringList read FRequest;
-    property ClientID: Cardinal read FClientID;
   end;
-
-var
-  ClientIDs: Cardinal = 0;
 
 implementation
 
@@ -218,29 +215,26 @@ var
   k: integer;
   ds, Usr, Psw: AnsiString;
 begin
-  Result:= false;
-  ds:= DecodeBase64Str(Auth);
-  k:= Pos(':', ds);
+  Result := false;
+  ds := DecodeBase64Str(Auth);
+  k := Pos(':', ds);
   if k < 1 then exit;
-  Usr:= UpperCase(Copy(ds, 1, k - 1));
-  Psw:= Copy(ds, k + 1, 255);
-  Result:= (Usr = 'TEST_USER') and (Psw = 'mypsw');
+  Usr := UpperCase(Copy(ds, 1, k - 1));
+  Psw := Copy(ds, k + 1, 255);
+  Result := (Usr = 'TEST_USER') and (Psw = 'mypsw');
 end;
 
 procedure THttpSrvClient.CloseFile;
 begin
   if FFile <> 0 then begin
     CloseHandle(FFile);
-    FFile:= 0;
+    FFile := 0;
   end;
 end;
 
 constructor THttpSrvClient.Create;
 begin
   inherited;
-  //Inc(ClientIDs);
-  //FClientID := ClientIDs;
-  Integer(FClientID) := Windows.InterlockedIncrement(Integer(ClientIDs));
   FRequest := TStringList.Create;
   FRequest.Sorted := True;
 end;
@@ -259,12 +253,12 @@ begin
   CloseFile;
   FResponse := '';
   if KeepAlive then begin
-    WsaBuf.cLength := BufferSize;
-    WsaBuf.pBuffer := Buffer;
-    if Read(WsaBuf, 1, 0) <> 0 then Disconnect;
+    WsaBuf.cLength := RecvBufSize;
+    WsaBuf.pBuffer := RecvBuf;
+    if ReadBuffer(WsaBuf, 1, 0) <> 0 then Disconnect($60);
   end else begin
-    Disconnect;
-  end;  
+    Disconnect($61);
+  end;
 end;
 
 procedure THttpSrvClient.Finalize;
@@ -275,12 +269,14 @@ end;
 
 procedure THttpSrvClient.Initialize;
 begin
-  FNotProcessed:= 0;
-  FCmdAccepted:= false;
-  FkeepAlive:= false;
-  FAuthorized:= false;
-  FAuthType:= atNone;// atDigest; // 
-  FVersion:= ''; FObjName:= ''; FParams:= '';
+  FNotProcessed := 0;
+  FCmdAccepted := false;
+  FkeepAlive := false;
+  FAuthorized := false;
+  FAuthType := atNone;   // atDigest; //
+  FVersion := '';
+  FObjName := '';
+  FParams := '';
 end;
 
 procedure THttpSrvClient.ParseCmdLine(const CommandLine: AnsiString);
@@ -289,15 +285,15 @@ var
   i, L, n: integer;
 begin
   Server.LogMsg(1, 1, ClientID, 'ParseCmdLine - Line '+CommandLine);
-  FHttpMethod:= METHOD_UNKNOWN;
-  i:= Pos(' ', CommandLine);
+  FHttpMethod := METHOD_UNKNOWN;
+  i := Pos(' ', CommandLine);
   if i = 0 then exit;
-  Command:= Copy(CommandLine, 1, i - 1);
-  if Command = 'GET' then FHttpMethod:= METHOD_GET else
-  if Command = 'HEAD' then FHttpMethod:= METHOD_HEAD;
+  Command := Copy(CommandLine, 1, i - 1);
+  if Command = 'GET' then FHttpMethod := METHOD_GET else
+  if Command = 'HEAD' then FHttpMethod := METHOD_HEAD;
 
-  inc(i);
-  L:= 0;
+  Inc(i);
+  L := 0;
   for n:= Length(CommandLine) downto i do begin
     if CommandLine[n] = ' ' then begin
       L:= n + 1;
@@ -305,12 +301,12 @@ begin
     end;
   end;
   if L = 0 then Exit;
-  FVersion:= Copy(CommandLine, L, MaxInt);
+  FVersion := Copy(CommandLine, L, MaxInt);
   if i >= L - 1 then Exit;
-  FObjName:= Trim(Copy(CommandLine, i, L - i - 1));
-  i:= Pos('?', FObjName);
+  FObjName := Trim(Copy(CommandLine, i, L - i - 1));
+  i := Pos('?', FObjName);
   if i <> 0 then begin
-    FParams:= Copy(FObjName, i + 1, MaxInt);
+    FParams := Copy(FObjName, i + 1, MaxInt);
     SetLength(FObjName, i - 1);
   end;
 end;
@@ -325,8 +321,9 @@ begin
   SetLength(db, 3);
   db[1] := '$';
   SetLength(s, MAX_LINE_LEN);
-  SrcPos:= 0; DstPos:= 1;
-  LastLine:= 0;
+  SrcPos := 0;
+  DstPos := 1;
+  LastLine := 0;
   Inc(BufLen, FNotProcessed);
   while SrcPos < BufLen do begin
     if DstPos > MAX_LINE_LEN then begin
@@ -368,11 +365,11 @@ begin
       begin
         if SrcPos + 2 < BufLen then begin
           Inc(SrcPos);
-          db[2]:= PBuf[SrcPos];
+          db[2] := PBuf[SrcPos];
           Inc(SrcPos);
-          db[3]:= PBuf[SrcPos];
+          db[3] := PBuf[SrcPos];
           Inc(SrcPos);
-          s[DstPos]:= Chr(StrToInt(db));
+          s[DstPos] := Chr(StrToInt(db));
           Inc(DstPos);
         end else begin
           Break;
@@ -380,18 +377,19 @@ begin
       end;
 
       else begin
-        s[DstPos]:= PBuf[SrcPos];
-        Inc(SrcPos); Inc(DstPos);
+        s[DstPos] := PBuf[SrcPos];
+        Inc(SrcPos);
+        Inc(DstPos);
       end;
     end;
   end;
 
-  FNotProcessed:= BufLen - LastLine;
+  FNotProcessed := BufLen - LastLine;
   if FNotProcessed > 0 then Move(PBuf[LastLine], PBuf[0], FNotProcessed);
-  WsaBuf.cLength:= BufferSize - FNotProcessed;
-  WsaBuf.pBuffer:= Buffer;
+  WsaBuf.cLength := RecvBufSize - FNotProcessed;
+  WsaBuf.pBuffer := RecvBuf;
   Inc(WsaBuf.pBuffer, FNotProcessed);
-  Read(WsaBuf, 1, 0);
+  ReadBuffer(WsaBuf, 1, 0);
 end;
 
 procedure THttpSrvClient.ProcessRequest;
@@ -402,24 +400,12 @@ var
   Size: LARGE_INTEGER;
   s: AnsiString;
   n: integer;
-//  FS: TFileStream;
   AuthHeader: AnsiString;
   sAuthInfo: AnsiString;
   AuthResult: Cardinal;
   NewClient: boolean;
 begin
   Server.LogMsg(1, 1, ClientID, 'ProcessRequest - IN');
-
-{  FS:= TFileStream.Create('Requests.txt', fmOpenReadWrite);
-  try
-    FS.Seek(0, soFromEnd);
-    s:= '>>> ' + IntToHex(integer(self), 8) + ' <<<'#13#10;
-    FS.Write(s[1], Length(s));
-    FRequest.SaveToStream(FS);
-    FS.Write(#13#10, 2);
-  finally
-    FS.Free;
-  end;   }
 
   try
     if FHttpMethod = METHOD_UNKNOWN then begin
@@ -433,7 +419,8 @@ begin
       SendError(400);
       Exit;
     end;
-    if Pos('myac.htm', FObjName) > 0 then begin
+    if Pos('test.htm', FObjName) > 0 then begin
+      FKeepAlive := True;
       SendError(999);
       Exit;
     end;
@@ -484,8 +471,7 @@ begin
       end;
     end;
 
-    FFile := CreateFile(PAnsiChar(FObjName), GENERIC_READ,
-          FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
+    FFile := CreateFile(PAnsiChar(FObjName), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     if FFile = INVALID_HANDLE_VALUE then
     begin
       Server.LogMsg(1, 1, ClientID, 'ProcessRequest - failed CreateFile !!!!! '+IntToHex(GetLastError, 8));
@@ -543,7 +529,7 @@ begin
                         #$0D#$0A+
                         'Hello 888';
            SendResponse2(@FResponse[1], Length(FResponse));
-           Exit;             
+           Exit;
          end;
     else sErr:= IntToStr(ErrCode);
   end;
@@ -572,9 +558,9 @@ var
 begin
   wsabuf.pBuffer := PData;
   wsabuf.cLength := Cardinal(DataLen);
-  res := Self.Write(wsabuf, 1, 0);
+  res := Self.WriteBuffer(wsabuf, 1, 0);
   if res <> 0 then begin
-    Server.LogMsg(1, 1, ClientID, 'WSASend Error: '+IntToHex(res, 8));
+    Server.LogMsg(1, 0, ClientID, '[ERROR] WSASend Error: '+IntToStr(res));
     Disconnect;
   end else begin
     Server.LogMsg(1, 1, ClientID, 'WSASend OK.');    // DO-

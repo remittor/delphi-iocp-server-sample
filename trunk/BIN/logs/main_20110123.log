@@ -1,0 +1,14 @@
+00000001 <2011-01-23 12:44:14>     HPServerSocket Create !!!
+00000002 <2011-01-23 12:44:14>  00 HPServerSocket Start !!!
+00000003 <2011-01-23 12:44:20>  01 [0000001E] Connect     IP=127.0.0.1
+00000004 <2011-01-23 12:44:20>  01 [0000001E] ProcessBuffer - IN
+00000005 <2011-01-23 12:44:20>  01 [0000001E] ParseCmdLine - Line GET /test.htm HTTP/1.1
+00000006 <2011-01-23 12:44:20>  01 [0000001E] ProcessBuffer - complete
+00000007 <2011-01-23 12:44:20>  01 [0000001E] ProcessRequest - IN
+00000008 <2011-01-23 12:44:20>  01 [0000001E] ProcessRequest - Object /test.htm
+00000009 <2011-01-23 12:44:20>  01 [0000001E] WSASend OK.
+0000000A <2011-01-23 12:44:20>  01 [0000001E] WriteComplete (size=90) --> DoWriteComplete ...
+0000000B <2011-01-23 12:45:19>  01 [0000001E] Error on ReadComplete: 64 (size=0)
+0000000C <2011-01-23 12:45:19>  01 [0000001E] Disconnect  IP=127.0.0.1
+0000000D <2011-01-23 13:01:29>  00 HPServerSocket Close !!!
+0000000E <2011-01-23 13:01:29>     HPServerSocket Destroy !!!
