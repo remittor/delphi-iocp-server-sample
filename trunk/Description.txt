@@ -1,9 +1,6 @@
-High performance socket server based on Windows Completion Port and with using Windows Socket Extensions. IPv6 supported.
-Version 1.4.
+High performance socket server based on Windows Completion Port and with using
+Windows Socket Extensions. IPv6 supported.
 
-Included two demo:
-1) Simple HTTP server what can work in HTTP and HTTP over SSL mode (HTTPS). SSL mode based on Windows SChannel provider and supports SSL 2.0, SSL 3.0 and TLS 1.0 protocols in any combinations.
-2) Simple Client/Server application used SSPI client authentication.
 
 {!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
@@ -55,5 +52,4 @@ January, 31, 2009
 
 Minimum OS: Windows 2000
 Recommended OS: WindowsXP SP2
-Demos required JEDI API Header Library
-( http://delphi-jedi.org/apilibrary.html )
+

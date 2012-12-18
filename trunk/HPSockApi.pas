@@ -74,8 +74,7 @@ type
 
   TSListFunc = record
     InitHeader: procedure (SListHeader: PSListHeader); stdcall;
-    PushSListEntry: function (SListHeader: PSListHeader;
-                 SListEntry: PSListEntry): PSListEntry; stdcall;
+    PushSListEntry: function (SListHeader: PSListHeader; SListEntry: PSListEntry): PSListEntry; stdcall;
     PopSListEntry: function (SListHeader: PSListHeader): PSListEntry; stdcall;
     FlushSList: function (SListHeader: PSListHeader): PSListEntry; stdcall;
     QueryDepth: function (SListHeader: PSListHeader): WORD; stdcall;
@@ -152,8 +151,8 @@ type
 
   TFreeAddrInfoW        = procedure (pai: PAddrInfoW); stdcall;
 
-  TGetThreadIOPendingFlag = function(hThread: THandle;
-                                 out IOIsPending: Longbool): BOOL; stdcall;
+  TGetThreadIOPendingFlag = function(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall;
+  
   TNtQueryInformationThread = function(hThread: THandle;
                       ThreadInformationClass: DWORD; out ThreadInformation;
                       ThreadInformationLength : ULONG;
@@ -185,20 +184,19 @@ function WSAIoctl(socket: TSocket; IoControlCode: DWORD; pInBuffer: Pointer;
               pCompletionRoutine: pointer): integer;
               stdcall; external  WS2_32_LIB;
 
-function BindIoCompletionCallback(hFile: THandle; CallbackFunc: Pointer;
-  Flags: ULONG): BOOL; stdcall; external kernel32;
+function BindIoCompletionCallback(hFile: THandle; CallbackFunc: Pointer; Flags: ULONG): BOOL; stdcall; external kernel32;
 
-function QueueUserWorkItem(CallbackFunc: Pointer; pContext: Pointer;
-  Flags: ULONG): BOOL; stdcall; external kernel32;
+function QueueUserWorkItem(CallbackFunc: Pointer; pContext: Pointer; Flags: ULONG): BOOL; stdcall; external kernel32;
 
 function GetExtensionFunc(Socket: TSocket; const FID: TGUID): pointer;
+
 procedure InitSListFunc(var SListFunc: TSListFunc);
 
-procedure ResolveAddressAndPort(const HostNameOrAddr,
-  ServiceOrPort, Proto: string; out Addr: TSockAddrIn);
+procedure ResolveAddressAndPort(const HostNameOrAddr, ServiceOrPort, Proto: string; out Addr: TSockAddrIn);
 
 function ResolveAddressAndPortV6(ServerSide: boolean; const HostNameOrAddr,
   ServiceOrPort: AnsiString; Family, SockType: integer): PAddrInfo; overload;
+
 function ResolveAddressAndPortV6(ServerSide: boolean; const HostNameOrAddr,
   ServiceOrPort: WideString; Family, SockType: integer): PAddrInfoW; overload;
 
@@ -216,38 +214,37 @@ var
   F_NtQueryInformationThread:  TNtQueryInformationThread  = nil;
 {### /Added}
 
-const
+var
   _IPv6Supported: boolean = false;
 
 implementation
 
 var
   HWs2_32Lib: HMODULE = 0;
-  HNtDll    : HMODULE = 0;
+  HNtDll: HMODULE = 0;
   
 { ESockAddrError }
 
 constructor ESockAddrError.Create(Code: integer);
 begin
-  ErrCode:= Code;
+  ErrCode := Code;
   Create(SysErrorMessage(ErrCode));
 end;
 
 {### Added June, 30, 2009}
-function InternalGetThreadIOPending(hThread: THandle;
-  out IOIsPending: Longbool): BOOL; stdcall;
+function InternalGetThreadIOPending(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall;
 var
   Info, RetLen: ULONG;
 begin
-  Result:= nil = @F_NtQueryInformationThread;
-  if Result then exit;
-  Result:= 0 = F_NtQueryInformationThread(hThread, 16, Info, SizeOf(Info), @RetLen);
-  IOIsPending:= (not Result) or (Info <> 0);
+  Result := (@F_NtQueryInformationThread = nil);
+  if Result then Exit;
+  Result := (F_NtQueryInformationThread(hThread, 16, Info, SizeOf(Info), @RetLen) = 0);
+  IOIsPending := (not Result) or (Info <> 0);
 end;
 
 function ThreadIsIoPending(hThread: THandle): bool;
 begin
-  if not F_GetThreadIOPendingFlag(hThread, Result) then Result:= true;
+  if not F_GetThreadIOPendingFlag(hThread, Result) then Result := True;
 end;
 {### /Added}
 
@@ -261,8 +258,7 @@ begin
   then Result:= nil;
 end;
 
-procedure ResolveAddressAndPort(const HostNameOrAddr,
-  ServiceOrPort, Proto: string; out Addr: TSockAddrIn);
+procedure ResolveAddressAndPort(const HostNameOrAddr, ServiceOrPort, Proto: string; out Addr: TSockAddrIn);
 var
   n, c: integer;
   pSE: PServEnt;
@@ -294,14 +290,14 @@ begin
   end;
 
   Val(ServiceOrPort, n, c);
-  if 0 <> c then
-  begin
+  if c <> 0 then begin
     pSE:= getservbyname(PAnsiChar(ServiceOrPort), PAnsiChar(Proto));
     if nil = pSE then
       raise ESockAddrError.Create(WSAGetLastError);
     Addr.sin_port:= u_short(pSE.s_port);
-  end else
+  end else begin
     Addr.sin_port:= htons(u_short(n));
+  end;  
 end;
 
 function ResolveAddressAndPortV6(ServerSide: boolean; const HostNameOrAddr,
@@ -311,22 +307,17 @@ var
   Rslt: integer;
   P: PAnsiChar;
 begin
-  if not _IPv6Supported then
-  begin
-    Result:= nil;
-    Exit;
-  end;
+  if not _IPv6Supported then begin Result := nil; Exit; end;
 
   FillChar(Hint, SizeOf(Hint), 0);
-  Hint.ai_family:= Family;
-  Hint.ai_socktype:= SockType;
-  if ServerSide then Hint.ai_flags:= AI_NUMERICHOST or AI_PASSIVE;
-  if '' = HostNameOrAddr then P:= nil
-  else P:= @HostNameOrAddr[1];
+  Hint.ai_family := Family;
+  Hint.ai_socktype := SockType;
+  if ServerSide then Hint.ai_flags := AI_NUMERICHOST or AI_PASSIVE;
+  if HostNameOrAddr = '' then P := nil else P := @HostNameOrAddr[1];
 
-  Rslt:= F_GetAddrInfo(P, PAnsiChar(ServiceOrPort), @Hint, Result);
+  Rslt := F_GetAddrInfo(P, PAnsiChar(ServiceOrPort), @Hint, Result);
 
-  if 0 <> Rslt then raise ESockAddrError.Create(Rslt);
+  if Rslt <> 0 then raise ESockAddrError.Create(Rslt);
 end;
 
 function ResolveAddressAndPortV6(ServerSide: boolean; const HostNameOrAddr,
@@ -336,73 +327,62 @@ var
   Rslt: integer;
   P: PWideChar;
 begin
-  if not _IPv6Supported then
-  begin
-    Result:= nil;
-    Exit;
-  end;
+  if not _IPv6Supported then begin Result := nil; Exit; end;
 
   FillChar(Hint, SizeOf(Hint), 0);
-  Hint.ai_family:= Family;
-  Hint.ai_socktype:= SockType;
-  if ServerSide then Hint.ai_flags:= AI_NUMERICHOST or AI_PASSIVE;
-  if '' = HostNameOrAddr then P:= nil
-  else P:= @HostNameOrAddr[1];
+  Hint.ai_family := Family;
+  Hint.ai_socktype := SockType;
+  if ServerSide then Hint.ai_flags := AI_NUMERICHOST or AI_PASSIVE;
+  if HostNameOrAddr = '' then P := nil else P := @HostNameOrAddr[1];
 
-  Rslt:= F_GetAddrInfoW(P, PWideChar(ServiceOrPort), @Hint, Result);
+  Rslt := F_GetAddrInfoW(P, PWideChar(ServiceOrPort), @Hint, Result);
 
-  if 0 <> Rslt then raise ESockAddrError.Create(Rslt);
+  if Rslt <> 0 then raise ESockAddrError.Create(Rslt);
 end;
 
 procedure InitSListFunc(var SListFunc: TSListFunc);
 var
   H: HMODULE;
 begin
-  SListFunc.Presents:= false;
-  H:= GetModuleHandle('kernel32.dll');
-
-  with SListFunc do
-  begin
-    @InitHeader:= GetProcAddress(H, 'InitializeSListHead');
+  SListFunc.Presents := False;
+  H := GetModuleHandle(kernel32);
+  with SListFunc do begin
+    @InitHeader := GetProcAddress(H, 'InitializeSListHead');
     if not Assigned(InitHeader) then Exit;
-    @PushSListEntry:= GetProcAddress(H, 'InterlockedPushEntrySList');
+    @PushSListEntry := GetProcAddress(H, 'InterlockedPushEntrySList');
     if not Assigned(PushSListEntry) then Exit;
-    @PopSListEntry:= GetProcAddress(H, 'InterlockedPopEntrySList');
+    @PopSListEntry := GetProcAddress(H, 'InterlockedPopEntrySList');
     if not Assigned(PopSListEntry) then Exit;
-    @FlushSList:= GetProcAddress(H, 'InterlockedFlushSList');
+    @FlushSList := GetProcAddress(H, 'InterlockedFlushSList');
     if not Assigned(FlushSList) then Exit;
-    @QueryDepth:= GetProcAddress(H, 'QueryDepthSList');
-    Presents:= Assigned(QueryDepth);
+    @QueryDepth := GetProcAddress(H, 'QueryDepthSList');
+    Presents := Assigned(QueryDepth);
   end;
 end;
 
 procedure InitUnit();
 begin
-  HWs2_32Lib:= LoadLibrary(WS2_32_LIB);
-  if 0 = HWs2_32Lib then Exit;
-  @F_GetAddrInfo:= GetProcAddress(HWs2_32Lib, 'getaddrinfo');
-  @F_GetAddrInfoW:= GetProcAddress(HWs2_32Lib, 'GetAddrInfoW');
-  @F_FreeAddrInfo:= GetProcAddress(HWs2_32Lib, 'freeaddrinfo');
-  @F_FreeAddrInfoW:= GetProcAddress(HWs2_32Lib, 'FreeAddrInfoW');
-  _IPv6Supported:= (nil <> @F_GetAddrInfo) and (nil <> @F_GetAddrInfoW)
-      and (nil <> @F_FreeAddrInfo) and (nil <> @F_FreeAddrInfoW);
+  HWs2_32Lib := LoadLibrary(WS2_32_LIB);
+  if HWs2_32Lib = 0 then Exit;
+  @F_GetAddrInfo := GetProcAddress(HWs2_32Lib, 'getaddrinfo');
+  @F_GetAddrInfoW := GetProcAddress(HWs2_32Lib, 'GetAddrInfoW');
+  @F_FreeAddrInfo := GetProcAddress(HWs2_32Lib, 'freeaddrinfo');
+  @F_FreeAddrInfoW := GetProcAddress(HWs2_32Lib, 'FreeAddrInfoW');
+  _IPv6Supported := (@F_GetAddrInfo <> nil) and (@F_GetAddrInfoW <> nil) and (@F_FreeAddrInfo <> nil) and (@F_FreeAddrInfoW <> nil);
 
 {### Added June, 30, 2009}
-  @F_GetThreadIOPendingFlag:=
-    GetProcAddress(GetModuleHandle(kernel32), 'GetThreadIOPendingFlag');
-  if nil = @F_GetThreadIOPendingFlag then
-    @F_GetThreadIOPendingFlag:= @InternalGetThreadIOPending;
-  HNtDll:= LoadLibrary('ntdll.dll');
-  if 0 <> HNtDll then
-    @F_NtQueryInformationThread:= GetProcAddress(HNtDll, 'NtQueryInformationThread');
+  @F_GetThreadIOPendingFlag := GetProcAddress(GetModuleHandle(kernel32), 'GetThreadIOPendingFlag');
+  if @F_GetThreadIOPendingFlag = nil then @F_GetThreadIOPendingFlag := @InternalGetThreadIOPending;
+  HNtDll := LoadLibrary('ntdll.dll');
+  if HNtDll <> 0 then @F_NtQueryInformationThread := GetProcAddress(HNtDll, 'NtQueryInformationThread');
 {### /Added}
 
 end;
 
 procedure FinalizeUnit();
 begin
-  if 0 <> HWs2_32Lib then FreeLibrary(HWs2_32Lib);
-  if 0 <> HNtDll then FreeLibrary(HNtDll);
+  if HWs2_32Lib <> 0 then FreeLibrary(HWs2_32Lib);
+  if HNtDll <> 0 then FreeLibrary(HNtDll);
 end;
 
 initialization
