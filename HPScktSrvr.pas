@@ -1,5 +1,7 @@
 unit HPScktSrvr;
 
+{$DEFINE EXTLOG}
+
 {!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
                               W_A_R_N_I_N_G !
@@ -74,13 +76,14 @@ interface
 
 uses
   Windows, Classes, SysUtils, WinSock,
-  HPSockApi, CompletionPort;
+  HPSockApi, CompletionPort,
+  uTempLog;  // что бы был доступ к потоковой переменной iCurrentThreadID и что бы логировать действия
 
 const
   MAX_WSA_BUFFERS = 32;
 
-  DefClientsCapacity      = 1024;
-  DefStuctStackCapacity   = 4096;
+  DefClientsCapacity      = 4*1024;   // 1024
+  DefStuctStackCapacity   = 16*1024;  // 4096
   DefAcceptorsCount       = 10;
   DefMinAcceptors         = 5;
   DefThreadsPerProcessor  = 4;
@@ -100,12 +103,12 @@ type
   THPServerSocketSPL = class;
   TClientList = class;
 
-  THPSockOpCode = (HPSO_ACCEPT, HPSO_READ, HPSO_WRITE,
+  THPSockOpCode = (HPSO_ACCEPT, HPSO_READ, HPSO_WRITE, HPSO_WRITE_ADV,
     HPSO_TRANSMITFILE, HPSO_TRANSMIT_DISCONNECT,
     HPSO_DISCONNECT, HPSO_USERASYNCCALL);
   
   PHPSockIOStructSPL = ^THPSockIOStructSPL;
-  THPSockIOStructSPL = record
+  THPSockIOStructSPL = packed record
     Ovp: TOverlapped;
     CompletionKey: integer;
     Error: integer;
@@ -116,11 +119,14 @@ type
   end;
 
   PHPSockIOStruct = ^THPSockIOStruct;
-  THPSockIOStruct = record
+  THPSockIOStruct = packed record     // 32 байтика
     Ovp: TOverlapped;
-    CompletionKey: integer;
-    OpCode: THPSockOpCode;
-    Client: THPServerClient;
+    OpCode: THPSockOpCode;          // 20
+    Dummy1: Byte;                   // 21
+    Dummy2: Byte;                   // 22
+    Dummy3: Byte;                   // 23
+    CompletionKey: Integer;         // 24
+    Client: THPServerClient;        // 28
   end;
 
   TUserKeyRange = 16..MAXDWORD - 1;
@@ -144,17 +150,22 @@ type
     FNext, FPrev: TCustomHPServerClient;
     FList: TClientList;
     FServer: TCustomHPServerSocket;
-    FSocket: TSocket;
-    FRefCount: integer;
+    FASocket: TSocket;
+    FRefCount: integer;       // счётчик активных ссылок на этого клиента
     FConnected: LongBool;
-    FPStruct: Pointer;
-    FLocalAddr,
+    FPStruct: Pointer;        // временное хранилище указателей на структуры (см. функцию ExchangeStruct)
+    FPStruct2: Pointer;       // хранилище для WSASend
+    FObjectID: Cardinal;
+    FClientID: Cardinal;
+    FLocalAddr: TSockAddrIn;
     FRemoteAddr: TSockAddrIn;
     FAddrOffset: integer;
-    FpConnectBuf: PByte;
-    FConnBufSize: integer;
+    FRecvBuf: PChar;      // буфер для данных, получаемых из AcceptEx и WSARecv
+    FRecvBufSize: Integer;
     FWaitConnectionData: boolean;
+    FAuthConnect: Boolean;            // признак того, что получили после коннекта корректный пакет "приветствия"
     function ExchangeStruct(P: Pointer): Pointer;
+    function ExchangeStruct2(P: Pointer): Pointer;
     function ExtractSocket(): TSocket;
     function GetLocalAddress: string;
     function GetLocalHost: string;
@@ -163,19 +174,22 @@ type
     function GetRemoteAddress: string;
     function GetRemoteHost: string;
     function GetRemotePort: Integer;
-    procedure ExtractAddresses();
+    procedure ExtractAddresses(ChangeAddr: Boolean = False);
     function GetConnectionTime: Cardinal;
     procedure ReallocConnBuf(NewSize: integer);
     function GetLocalAddr: TSockAddrIn;
-    function GetBufferSize: integer;
+    function GetRecvBufSize: Integer;
     procedure SetWaitConnectionData(const Value: boolean);
   protected
     function _AddRef: integer;
     function _Release: integer;
   public
-    constructor Create(); virtual;
+    constructor Create; virtual;
     destructor Destroy; override;
-    procedure Disconnect; virtual; abstract;
+    procedure Disconnect(Reason: Integer = 0); virtual; abstract;
+
+    property ObjectID: Cardinal read FObjectID;
+    property ClientID: Cardinal read FClientID;
 
     property LocalHost: string read GetLocalHost;
     property LocalAddress: string read GetLocalAddress;
@@ -187,11 +201,12 @@ type
     property RemotePort: Integer read GetRemotePort;
     property RemoteAddr: TSockAddrIn read GetRemoteAddr;
 
-    property Handle: TSocket read FSocket;
+    property ASocket: TSocket read FASocket;   // sAcceptSocket
     property Server: TCustomHPServerSocket read FServer;
     property Connected: LongBool read FConnected;
-    property Buffer: PByte read FpConnectBuf;
-    property BufferSize: integer read GetBufferSize;
+    property AuthConnect: Boolean read FAuthConnect write FAuthConnect;
+    property RecvBuf: PChar read FRecvBuf;
+    property RecvBufSize: Integer read FRecvBufSize; // GetRecvBufSize;
     property ConnectionTime: Cardinal read GetConnectionTime;
 {### 1.4.0.6 Added june, 30, 2009}
     property WaitConnectionData: boolean read FWaitConnectionData  write SetWaitConnectionData;
@@ -200,16 +215,18 @@ type
 
   THPServerClientSPL = class(TCustomHPServerClient)
   public
-    procedure Disconnect; override;
-    function WriteBuffer(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
+    procedure Disconnect(Reason: Integer = 0); override;
     function ReadBuffer(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
+    function WriteBuffer(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
   end;
 
   THPServerClient = class(TCustomHPServerClient)
   public
-    procedure Disconnect; override;
-    function WriteBuffer(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
+    procedure Disconnect(Reason: Integer = 0); override;
+    function ReadBufferEx(var Buffers: TWsaBuf; BufCount, CompletionKey: Integer; DMode: Integer; var AValue: Integer): Integer;
     function ReadBuffer(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
+    function WriteBuffer(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
+    function WriteBuffer2(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
     function Transmit(hFile: THandle; BytesToWrite, BytesPerSend: DWORD;
                       pTransmitBuffers: PTransmitFileBuffers;
                       CompletionKey: integer; DisconnectClient: boolean): integer;
@@ -246,7 +263,7 @@ type
 
   TSocketStack = class(TThreadSafeStack)
   private
-    FSockets: array [0..$3FFF] of TSocket;
+    FSockets: array [0..$4080] of TSocket;
   protected
     procedure SetCapacity(const Value: integer); override;
   public
@@ -256,7 +273,7 @@ type
   end;
 
 {$IFDEF USE_SLIST}
-
+{
   PHPSListEntry = ^THPSListEntry;
   THPSListEntry = record
     case byte of
@@ -270,12 +287,13 @@ type
     0: (Next: Pointer);
     1: (IOStruct: THPSockIOStructSPL);
   end;
-
+}
   TStructStack = class(TObject)
   private
     FSList: TSListHeader;
     FItemSize: integer;
     FCapacity: integer;
+    FTotalCount: Integer;
     FClosed: boolean;
   protected
     procedure SetCapacity(const Value: integer);
@@ -289,6 +307,7 @@ type
     property Capacity: integer read FCapacity write SetCapacity;
     property Closed: boolean read FClosed write FClosed;
     property Count: integer read GetCount;
+    property TotalCount: Integer read FTotalCount;
   end;
 
 {$ELSE}
@@ -318,14 +337,19 @@ type
   private
     FClient: TCustomHPServerClient;
     FNextEnum: TCustomHPServerClient;
+    FCountMax: Integer;
+    FCountMaxTime: TDateTime;
   protected
     procedure SetCapacity(const Value: integer); override;
   public
+    constructor Create(ACapacity: Integer);
     procedure Push(AClient: TCustomHPServerClient);
     function Pop: TCustomHPServerClient;
     function Remove(AClient: TCustomHPServerClient): integer;
     procedure Clear; override;
     procedure Enum(const EnumProc: TEnumClients);
+    property CountMax: Integer read FCountMax;
+    property CountMaxTime: TDateTime read FCountMaxTime;
   end;
 
   THPThreadList = class(TObject)
@@ -341,10 +365,11 @@ type
     procedure UnlockList;
   end;
 
-  THPServConnectEvent = procedure(AClient: TCustomHPServerClient; pConnectionData: PByte; ConnectionDataLen: integer) of object;
-  THPServBeforeAcceptEvent = procedure(AClient: TCustomHPServerClient; var ConnBufSize: integer) of object;
+  THPServConnectEvent = procedure(AClient: TCustomHPServerClient; ConnectionData: PChar; ConnectionDataLen: Integer) of object;
+  THPServBeforeAcceptEvent = procedure(AClient: TCustomHPServerClient; var ConnBufSize: Integer) of object;
   THPServDisconnectEvent = procedure(AClient: TCustomHPServerClient) of object;
-  THPServCompleteEvent = procedure(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey: integer; Error: integer) of object;
+  THPServFinalizeRef1Event = procedure(AClient: TCustomHPServerClient) of object;
+  THPServCompleteEvent = procedure(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey: Integer; Error: Integer) of object;
   THPInitSocketEvent = procedure(Sender: TCustomHPServerSocket; Socket: TSocket) of object;
   THPLogMessageEvent = procedure(const Params: array of PAnsiChar; EventType, Category: Word; ID: DWORD) of object;
   THPLogMsgEvent = procedure(ModuleID, LogLevel: Byte; ThreadID, ClientID: Cardinal; const Line: String) of object;
@@ -364,9 +389,8 @@ type
 
   TCustomHPServerSocket = class({$IFDEF WITH_GUI}TComponent{$ELSE}TObject{$ENDIF})
   private
-    FListener: TSocket;
     FBindAddr: TBindAddr;
-    FClientClass: THPServerClientSPLClass;
+    FClientClass: THPServerClientClass;  // THPServerClientSPLClass;    // ???? почему вдруг SPL ????
     FAcceptorsCount: integer;
     FMinAcceptors: integer;
     FActualAcceptors: integer;
@@ -376,7 +400,8 @@ type
     FClientObjectsCount: integer;
     FConnections: TClientList;
     FClientStack: TClientList;
-    FStructStack: TStructStack;
+    FStructStack: TStructStack;   // стек основных структур для AcceptEx, WSARecv и т.д.
+    FStructStack2: TStructStack;  // стек структур для функции WSASend
 
     FActive: LongBool;
     FServiceOrPort: string;
@@ -390,15 +415,20 @@ type
 
     FOnCreateListener: THPInitSocketEvent;
     FOnCreateAcceptor: THPInitSocketEvent;
-    FOnWriteComplete: THPServCompleteEvent;
     FOnReadComplete: THPServCompleteEvent;
+    FOnWriteComplete: THPServCompleteEvent;
+    FOnWriteComplete2: THPServCompleteEvent;
     FOnClientConnect: THPServConnectEvent;
     FOnClientDisconnect: THPServDisconnectEvent;
+    FOnClientFinalizeRef1: THPServFinalizeRef1Event;
     FOnLogMessage: THPLogMessageEvent;
     FOnLogMsg: THPLogMsgEvent;
     FOnThreadException: THPExceptionEvent;
     FOnClientBeforeAccept: THPServBeforeAcceptEvent;
     FFullExtensionsSupport: boolean;
+
+    FChangeRemoteLocalAddr: Boolean;
+    FBindSocketToIocpAfterAccept: Boolean;
 
     procedure GetExtensions;
     procedure IncreazeClients;
@@ -406,15 +436,19 @@ type
     function CloseConnectionsProc(AClient: TCustomHPServerClient): boolean;
     function GetClientsCapacity: integer;
     function GetStuctCapacity: integer;
-    procedure SetClientsCapacity(const Value: integer);
+    function GetStuct2Capacity: integer;
     procedure SetStuctCapacity(const Value: integer);
+    procedure SetStuct2Capacity(const Value: integer);
+    procedure SetClientsCapacity(const Value: integer);
     procedure SetAcceptorsCount(const Value: integer);
     procedure SetOnClientConnect(const Value: THPServConnectEvent);
     procedure SetOnClientDisconnect(const Value: THPServDisconnectEvent);
+    procedure SetOnClientFinalizeRef1(const Value: THPServFinalizeRef1Event);
     procedure SetOnCreateAcceptor(const Value: THPInitSocketEvent);
     procedure SetOnCreateListener(const Value: THPInitSocketEvent);
     procedure SetOnReadComplete(const Value: THPServCompleteEvent);
     procedure SetOnWriteComplete(const Value: THPServCompleteEvent);
+    procedure SetOnWriteComplete2(const Value: THPServCompleteEvent);
     procedure SetAddress(const Value: string);
     procedure SetServiceOrPort(const Value: string);
     procedure SetOnLogMessage(const Value: THPLogMessageEvent);
@@ -423,9 +457,14 @@ type
     procedure SetOnClientBeforeAccept(const Value: THPServBeforeAcceptEvent);
     procedure SetAcceptorPriority(const Value: TAcceptorPriority);
     function GetConnectionsCount: integer;
+    function GetClientStackCount: integer;
+    function GetStructStackCount: integer;
+    function GetStructStack2Count: integer;
     procedure SetMinAcceptors(Value: integer);
     procedure ClientAccepted;
   public
+    FListener: TSocket;      // sListenSocket
+    
     constructor Create{$IFDEF WITH_GUI}(AOwner: TComponent){$ENDIF};
     destructor Destroy; override;
 
@@ -434,26 +473,41 @@ type
     procedure EnumerateConnections(const Proc: TEnumClients);
     procedure LogMessage(const Params: array of PAnsiChar; EventType, Category: Word; ID: DWORD);
     procedure LogMsg(ModuleID, LogLevel: Byte; ClientID: Cardinal; const Line: String);
+    procedure LogMsgXTC(ModuleID, LogLevel: Byte; ClientID: Cardinal; const Line: String);
+    procedure LogMsgXT(ModuleID, LogLevel: Byte; const Line: String);
+    procedure LogMsgXS(ModuleID, LogLevel: Byte; const Line: String);
+
+    function GetConnectionsCountEx(var CountMax: Integer; var CountMaxTime: TDateTime): Integer;
 
     property Active: LongBool read FActive;
     property ConnectionsCount: integer read GetConnectionsCount;
+    property ClientStackCount: integer read GetClientStackCount;
+    property ClientObjectsCount: integer read FClientObjectsCount;
+    property StructStackCount: integer read GetStructStackCount;
+    property StructStack2Count: integer read GetStructStack2Count;
 
+    property LSocket: TSocket read FListener;
     property Address: string read FAddress write SetAddress;
     property ServiceOrPort: string read FServiceOrPort write SetServiceOrPort;
     property Port: string read FServiceOrPort write SetServiceOrPort;
     property ClientStackCapacity: integer read GetClientsCapacity  write SetClientsCapacity default DefClientsCapacity;
     property StuctStackCapacity: integer read GetStuctCapacity write SetStuctCapacity default DefStuctStackCapacity;
+    property StuctStack2Capacity: integer read GetStuct2Capacity write SetStuct2Capacity default DefStuctStackCapacity;
     property AcceptorsCount: integer read FAcceptorsCount write SetAcceptorsCount default DefAcceptorsCount;
     property MinimumAcceptors: integer read FMinAcceptors write SetMinAcceptors default DefMinAcceptors;
     property AcceptorPriority: TAcceptorPriority read FAcceptorPriority write SetAcceptorPriority default apNormal;
     property FullExtensionsSupport: boolean read FFullExtensionsSupport;
+    property ChangeRemoteLocalAddr: Boolean read FChangeRemoteLocalAddr write FChangeRemoteLocalAddr;
+    property BindSocketToIocpAfterAccept: Boolean read FBindSocketToIocpAfterAccept write FBindSocketToIocpAfterAccept;
     property OnCreateListener: THPInitSocketEvent read FOnCreateListener write SetOnCreateListener;
     property OnCreateAcceptor: THPInitSocketEvent read FOnCreateAcceptor write SetOnCreateAcceptor;
     property OnClientBeforeAccept: THPServBeforeAcceptEvent read FOnClientBeforeAccept write SetOnClientBeforeAccept;
     property OnClientConnect: THPServConnectEvent read FOnClientConnect write SetOnClientConnect;
     property OnClientDisconnect: THPServDisconnectEvent read FOnClientDisconnect write SetOnClientDisconnect;
+    property OnClientFinalizeRef1: THPServFinalizeRef1Event read FOnClientFinalizeRef1 write SetOnClientFinalizeRef1;
     property OnReadComplete: THPServCompleteEvent read FOnReadComplete write SetOnReadComplete;
     property OnWriteComplete: THPServCompleteEvent read FOnWriteComplete write SetOnWriteComplete;
+    property OnWriteComplete2: THPServCompleteEvent read FOnWriteComplete2 write SetOnWriteComplete2;
     property OnLogMessage: THPLogMessageEvent read FOnLogMessage write SetOnLogMessage;
     property OnLogMsg: THPLogMsgEvent read FOnLogMsg write SetOnLogMsg;
     property OnThreadException: THPExceptionEvent read FOnThreadException write SetOnThreadException;
@@ -487,6 +541,7 @@ type
     property OnClientDisconnect;
     property OnReadComplete;
     property OnWriteComplete;
+    property OnWriteComplete2;
     property OnLogMessage;
     property OnLogMsg;
     property OnThreadException;
@@ -544,6 +599,7 @@ type
     property ServiceOrPort;
     property ClientStackCapacity;
     property StuctStackCapacity;
+    property StuctStack2Capacity;
     property AcceptorsCount;
     property MinimumAcceptors;
     property AcceptorPriority;
@@ -553,8 +609,10 @@ type
     property OnClientBeforeAccept;
     property OnClientConnect;
     property OnClientDisconnect;
+    property OnClientFinalizeRef1;
     property OnReadComplete;
     property OnWriteComplete;
+    property OnWriteComplete2;
     property OnLogMessage;
     property OnLogMsg;
     property OnThreadException;
@@ -571,6 +629,10 @@ type
 {$IFDEF WITH_GUI}
 procedure Register;
 {$ENDIF}
+
+var
+  GlobObjectIDs: Cardinal = 0;
+  GlobClientIDs: Cardinal = 0;
 
 implementation
 
@@ -632,6 +694,7 @@ constructor TThreadSafeStack.Create(ACapacity: integer);
 begin
   InitializeCriticalSectionAndSpinCount(FCS, 128 or CS_Alloc_Event);
   Capacity := ACapacity;
+  FCount := 0;
 end;
 
 destructor TThreadSafeStack.Destroy;
@@ -725,11 +788,14 @@ constructor TCustomHPServerSocket.Create{$IFDEF WITH_GUI}(AOwner: TComponent){$E
 begin
   inherited;
   FAcceptorPriority := apNormal;
-  FClientClass := THPServerClientSPL;
+  FClientClass := THPServerClient;   // THPServerClientSPL;
+  // FClientStack - глобальный список клиентских объектов, которые можно повторно использовать
   FClientStack := TClientList.Create(DefClientsCapacity);
+  // FConnections - это спискок приконнекченных клиентов, которые взяты из списка FClientStack
   FConnections := TClientList.Create(-1);
   FAcceptorsCount := DefAcceptorsCount;
   FMinAcceptors := DefMinAcceptors;
+  FBindSocketToIocpAfterAccept := False;
   FClientsEvent := CreateEvent(nil, true, true, nil);
   if FClientsEvent = 0 then raise EHPServerException.Create(SysErrorMessage(GetLastError));
 end;
@@ -773,6 +839,21 @@ begin
   Result := FStructStack.Capacity;
 end;
 
+procedure TCustomHPServerSocket.SetStuctCapacity(const Value: integer);
+begin
+  FStructStack.Capacity := Value;
+end;
+
+function TCustomHPServerSocket.GetStuct2Capacity: integer;
+begin
+  Result := FStructStack2.Capacity;
+end;
+
+procedure TCustomHPServerSocket.SetStuct2Capacity(const Value: integer);
+begin
+  FStructStack2.Capacity := Value;
+end;
+
 procedure TCustomHPServerSocket.SetClientsCapacity(const Value: integer);
 begin
   FClientStack.Capacity := Value;
@@ -798,6 +879,11 @@ begin
   if not FActive then FOnClientDisconnect := Value;
 end;
 
+procedure TCustomHPServerSocket.SetOnClientFinalizeRef1(const Value: THPServFinalizeRef1Event);
+begin
+  if not FActive then FOnClientFinalizeRef1 := Value;
+end;
+
 procedure TCustomHPServerSocket.SetOnCreateAcceptor(const Value: THPInitSocketEvent);
 begin
   if not FActive then FOnCreateAcceptor := Value;
@@ -818,9 +904,9 @@ begin
   if not FActive then FOnWriteComplete := Value;
 end;
 
-procedure TCustomHPServerSocket.SetStuctCapacity(const Value: integer);
+procedure TCustomHPServerSocket.SetOnWriteComplete2(const Value: THPServCompleteEvent);
 begin
-  FStructStack.Capacity := Value;
+  if not FActive then FOnWriteComplete2 := Value;
 end;
 
 procedure TCustomHPServerSocket.SetAddress(const Value: string);
@@ -859,35 +945,34 @@ begin
   if Assigned(OnLogMessage) then OnLogMessage(Params, EventType, Category, ID);
 end;
 
-function GetThreadClientNumber(ThreadID: Cardinal): Cardinal;
-begin
-  if ThreadID = $FFFFFFFF then begin Result := $FFFFFFFF; Exit; end;
-  if ThreadID = $FFFFFFFE then ThreadID := Windows.GetCurrentThreadId;
-  if not Assigned(ThreadClientList) then begin
-    ThreadClientList := TList.Create;
-    ThreadClientList.Add(Pointer(MainThreadID));
-    Result := 0;
-    if ThreadID <> MainThreadID then begin
-      ThreadClientList.Add(Pointer(ThreadID));
-      Result := 1;
-    end;
-    Exit;
-  end;
-  Result := Cardinal(ThreadClientList.IndexOf(Pointer(ThreadID)));
-  if Result = $FFFFFFFF then begin
-    ThreadClientList.Add(Pointer(ThreadID));
-    Result := ThreadClientList.Count - 1;
-  end;
-end;
-
 procedure TCustomHPServerSocket.SetOnLogMsg(const Value: THPLogMsgEvent);
 begin
   if not FActive then FOnLogMsg := Value;
 end;
 
 procedure TCustomHPServerSocket.LogMsg(ModuleID, LogLevel: Byte; ClientID: Cardinal; const Line: String);
+var
+  aThreadID: Cardinal;
 begin
-  if Assigned(OnLogMsg) then OnLogMsg(ModuleID, LogLevel, GetThreadClientNumber($FFFFFFFE), ClientID, Line);
+  if Assigned(OnLogMsg) then begin
+    aThreadID := GetCurrentThreadNumber($FFFFFFFE);
+    OnLogMsg(ModuleID, LogLevel, aThreadID, ClientID, Line);
+  end;
+end;
+
+procedure TCustomHPServerSocket.LogMsgXTC(ModuleID, LogLevel: Byte; ClientID: Cardinal; const Line: String);
+begin
+  LogMsg(ModuleID, LogLevel, ClientID, Line);
+end;
+
+procedure TCustomHPServerSocket.LogMsgXT(ModuleID, LogLevel: Byte; const Line: String);
+begin
+  LogMsg(ModuleID, LogLevel, $FFFFFFFF, Line);
+end;
+
+procedure TCustomHPServerSocket.LogMsgXS(ModuleID, LogLevel: Byte; const Line: String);
+begin
+  if Assigned(OnLogMsg) then OnLogMsg(ModuleID, LogLevel, $FFFFFFFF, $FFFFFFFF, Line);
 end;
 
 procedure TCustomHPServerSocket.SetOnThreadException(const Value: THPExceptionEvent);
@@ -897,7 +982,7 @@ end;
 
 procedure TCustomHPServerSocket.SetOnClientBeforeAccept(const Value: THPServBeforeAcceptEvent);
 begin
-  if not FActive then FOnClientBeforeAccept  := Value;
+  if not FActive then FOnClientBeforeAccept := Value;
 end;
 
 procedure TCustomHPServerSocket.Open;
@@ -914,7 +999,8 @@ begin
   FClientStack.Closed := false;
   FConnections.Closed := false;
   FStructStack.Closed := false;
-//  if FConnections.Count = 0 then
+  FStructStack2.Closed := false;
+//_if FConnections.Count = 0 then
   SetEvent(FClientsEvent);
   {$IFNDEF MINWINXP}
   if _IPv6Supported then begin
@@ -954,8 +1040,7 @@ begin
   {$ENDIF}
 
   with FBindAddr do FListener := socket(SockFamily, SockType, IPPROTO_IP);
-  if INVALID_SOCKET = FListener then
-  begin
+  if FListener = INVALID_SOCKET then begin
     FListener := 0;
     raise EHPServerException.Create(SysErrorMessage(WSAGetLastError));
   end;
@@ -988,6 +1073,28 @@ end;
 function TCustomHPServerSocket.GetConnectionsCount: integer;
 begin
   Result := FConnections.Count;
+end;
+
+function TCustomHPServerSocket.GetConnectionsCountEx(var CountMax: Integer; var CountMaxTime: TDateTime): Integer;
+begin
+  Result := FConnections.Count;
+  CountMax := FConnections.CountMax;
+  CountMaxTime := FConnections.CountMaxTime;
+end;
+
+function TCustomHPServerSocket.GetClientStackCount: integer;
+begin
+  Result := FClientStack.Count;
+end;
+
+function TCustomHPServerSocket.GetStructStackCount: integer;
+begin
+  Result := FStructStack.TotalCount;
+end;
+
+function TCustomHPServerSocket.GetStructStack2Count: integer;
+begin
+  Result := FStructStack.TotalCount;
 end;
 
 procedure TCustomHPServerSocket.SetMinAcceptors(Value: integer);
@@ -1076,7 +1183,7 @@ begin
           with PStruct^, Client do
           begin
             _AddRef;
-            if WSARecv(Handle, Buffers[0], BuffersCount, dw, Flg, @Ovp, nil) = SOCKET_ERROR then begin
+            if WSARecv(ASocket, Buffers[0], BuffersCount, dw, Flg, @Ovp, nil) = SOCKET_ERROR then begin
               Error := WSAGetLastError;
               if Error <> WSA_IO_PENDING then QueueUserWorkItem(@Handle_IO_Error, PStruct, WT_EXECUTEDEFAULT);
             end;
@@ -1088,7 +1195,7 @@ begin
           with PStruct^, Client do
           begin
             _AddRef;
-            if WSASend(Handle, Buffers[0], BuffersCount, dw, 0, @Ovp, nil) = SOCKET_ERROR then
+            if WSASend(ASocket, Buffers[0], BuffersCount, dw, 0, @Ovp, nil) = SOCKET_ERROR then
             begin
               Error := WSAGetLastError;
               if Error <> WSA_IO_PENDING then QueueUserWorkItem(@Handle_IO_Error, PStruct, WT_EXECUTEDEFAULT);
@@ -1141,7 +1248,7 @@ begin
             if P <> nil then C.Server.FStructStack.Push(P);
             if Assigned(C.Server.OnClientConnect) then
             try
-              C.Server.OnClientConnect(C, C.FpConnectBuf, integer(BytesTransfered));
+              C.Server.OnClientConnect(C, C.FRecvBuf, Integer(BytesTransfered));
             except
               C.Disconnect;
             end;
@@ -1221,8 +1328,7 @@ begin
 
   StartTime := GetTickCount;
   closesocket(InterlockedExchange(FListener, 0));
-  FAcceptThread.Terminate;
-
+  FAcceptThread.Terminate;   
 
   FConnections.Enum(CloseConnectionsProc);
   WaitForSingleObject(FClientsEvent, GetNextTimeout);
@@ -1252,9 +1358,7 @@ begin
   end;
 end;
 
-procedure THPServerSocketSPL.SetClientClass(
-const
-  Value: THPServerClientSPLClass);
+procedure THPServerSocketSPL.SetClientClass(const Value: THPServerClientSPLClass);
 begin
   if not FActive then begin
     if Value = nil then begin
@@ -1315,6 +1419,7 @@ begin
   {$ENDIF}
   Capacity := ACapacity;
   FItemSize := ItemSize;
+  FTotalCount := 0;
 end;
 
 destructor TStructStack.Destroy;
@@ -1332,7 +1437,10 @@ begin
   {$ELSE}
   Result := SList_PopSListEntry(@FSList);
   {$ENDIF}
-  if not Assigned(Result) then Result := AllocMem(FItemSize);
+  if not Assigned(Result) then begin
+    Result := AllocMem(FItemSize);
+    Windows.InterlockedIncrement(FTotalCount);
+  end;
   if Assigned(Result) then FillChar(Result^, FItemSize, 0);
 end;
 
@@ -1454,6 +1562,13 @@ end;
 
 { TClientList }
 
+constructor TClientList.Create(ACapacity: Integer);
+begin
+  inherited Create(ACapacity);
+  FCountMax := 0;
+  FCountMaxTime := 0;
+end;
+
 procedure TClientList.Clear;
 begin
   /// Temporary stub
@@ -1516,6 +1631,10 @@ begin
         FClient := AClient;
         AClient := nil;
         Inc(FCount);
+        if FCount > FCountMax then begin
+          FCountMax := FCount;
+          FCountMaxTime := SysUtils.Now;
+        end;
       end;
     finally
       Unlock;
@@ -1607,14 +1726,28 @@ end;
 function TCustomHPServerClient._Release: integer;
 begin
   Result := InterlockedDecrement(FRefCount);
-  if 0 = Result then Destroy;
+  {
+  if Result = 0 then begin
+    FServer.LogMsg1TC(2, ClientID, '[DEBUG] Client Destroy (Ref='+IntToStr(Result)+')');
+    //Destroy;
+  end else begin
+    FServer.LogMsg1TC(2, ClientID, '[DEBUG] Client Release (Ref='+IntToStr(Result)+')');
+  end;
+  }
+  if Result = 0 then Destroy;
+  if Result = 1 then begin
+    if Assigned(FServer.FOnClientFinalizeRef1) then FServer.FOnClientFinalizeRef1(Self);
+  end;
 end;
 
 constructor TCustomHPServerClient.Create;
 begin
+  Integer(FObjectID) := Windows.InterlockedIncrement(Integer(GlobObjectIDs));
+  FClientID := 0;  // Integer(FClientID) := Windows.InterlockedIncrement(Integer(GlobClientIDs));
   FServer.IncreazeClients;
   FRefCount := 1;
-  FWaitConnectionData := true;
+  FWaitConnectionData := True;
+  FAuthConnect := False;
 end;
 
 destructor TCustomHPServerClient.Destroy;
@@ -1623,10 +1756,17 @@ var
   p: PHPSockIOStructSPL;
 begin
   s := ExtractSocket;
-  if s <> 0 then closesocket(s);
+  if s <> 0 then begin
+    closesocket(s);
+    {$IFDEF EXTLOG}
+    Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] closesocket !!!');
+    {$ENDIF}
+  end;
   p := ExchangeStruct(nil);
   if p <> nil then FreeMem(p);
-  FreeMem(FpConnectBuf);
+  p := ExchangeStruct2(nil);
+  if p <> nil then FreeMem(p);
+  FreeMem(FRecvBuf);
   inherited;
   FServer.DecreazeClients;
 end;
@@ -1636,19 +1776,29 @@ begin
   integer(Result) := InterlockedExchange(integer(FPStruct), integer(P));
 end;
 
-procedure TCustomHPServerClient.ExtractAddresses;
+function TCustomHPServerClient.ExchangeStruct2(P: Pointer): Pointer;
+begin
+  integer(Result) := InterlockedExchange(integer(FPStruct2), integer(P));
+end;
+
+procedure TCustomHPServerClient.ExtractAddresses(ChangeAddr: Boolean = False);
 var
   PLoc, PRem: PSockAddrIn;
   LLoc, LRem: integer;
 begin
-  Server.FGetAcceptExSockaddrs(FpConnectBuf, FAddrOffset, Addr_Buf_Len, Addr_Buf_Len, PLoc, LLoc, PRem, LRem);
-  if SizeOf(FLocalAddr)  = LLoc then FLocalAddr  := PLoc^ else FillChar(FLocalAddr,  SizeOf(FLocalAddr),  0);
-  if SizeOf(FRemoteAddr) = LRem then FRemoteAddr := PRem^ else FillChar(FRemoteAddr, SizeOf(FRemoteAddr), 0);
+  Server.FGetAcceptExSockaddrs(FRecvBuf, FAddrOffset, Addr_Buf_Len, Addr_Buf_Len, PLoc, LLoc, PRem, LRem);
+  if ChangeAddr then begin  // это для WINE
+    if SizeOf(FLocalAddr)  = LRem then FLocalAddr  := PRem^ else FillChar(FLocalAddr,  SizeOf(FLocalAddr),  0);
+    if SizeOf(FRemoteAddr) = LLoc then FRemoteAddr := PLoc^ else FillChar(FRemoteAddr, SizeOf(FRemoteAddr), 0);
+  end else begin
+    if SizeOf(FLocalAddr)  = LLoc then FLocalAddr  := PLoc^ else FillChar(FLocalAddr,  SizeOf(FLocalAddr),  0);
+    if SizeOf(FRemoteAddr) = LRem then FRemoteAddr := PRem^ else FillChar(FRemoteAddr, SizeOf(FRemoteAddr), 0);
+  end;  
 end;
 
 function TCustomHPServerClient.ExtractSocket: TSocket;
 begin
-  Result := InterlockedExchange(FSocket, 0);
+  Result := InterlockedExchange(FASocket, 0);
 end;
 
 function TCustomHPServerClient.GetConnectionTime: Cardinal;
@@ -1656,7 +1806,7 @@ var
   OptLen: integer;
 begin
   Optlen := sizeof(Result);
-  getsockopt(Handle, SOL_SOCKET, SO_CONNECT_TIME, @Result, OptLen);
+  getsockopt(ASocket, SOL_SOCKET, SO_CONNECT_TIME, @Result, OptLen);
 end;
 
 function TCustomHPServerClient.GetLocalAddress: string;
@@ -1702,14 +1852,14 @@ begin
   Result := ntohs(FRemoteAddr.sin_port);
 end;
 
-procedure TCustomHPServerClient.ReallocConnBuf(NewSize: integer);
+procedure TCustomHPServerClient.ReallocConnBuf(NewSize: Integer);
 begin
-  if (FpConnectBuf = nil) or (NewSize <> BufferSize) then begin
-    FreeMem(FpConnectBuf);
-    FpConnectBuf := nil;
-    FConnBufSize := 0;
-    GetMem(FpConnectBuf, NewSize + 2 * Addr_Buf_Len);
-    FConnBufSize := NewSize;
+  if (FRecvBuf = nil) or (NewSize <> FRecvBufSize) then begin
+    FreeMem(FRecvBuf);
+    FRecvBuf := nil;
+    FRecvBufSize := 0;
+    GetMem(FRecvBuf, NewSize + 2 * Addr_Buf_Len);  // для AcceptEx немного доп. байтиков зарезервируем
+    FRecvBufSize := NewSize;
   end;
 end;
 
@@ -1718,9 +1868,10 @@ begin
   Result := FLocalAddr;
 end;
 
-function TCustomHPServerClient.GetBufferSize: integer;
+function TCustomHPServerClient.GetRecvBufSize: Integer;
 begin
-  if Connected then Result := FConnBufSize + Addr_Buf_Len*2  else Result := FConnBufSize;
+  Result := FRecvBufSize;
+  //if Connected then Result := FConnBufSize + Addr_Buf_Len*2  else Result := FConnBufSize;
 end;
 
 procedure TCustomHPServerClient.SetWaitConnectionData(const Value: boolean);
@@ -1730,7 +1881,7 @@ end;
 
 { THPServerClientSPL }
 
-procedure THPServerClientSPL.Disconnect;
+procedure THPServerClientSPL.Disconnect(Reason: Integer = 0);
 var
   P: PHPSockIOStructSPL;
   s: TSocket;
@@ -1747,7 +1898,7 @@ begin
   if P <> nil then Server.FStructStack.Push(P);
 
   b := Assigned(Server.FDisconnectEx);
-  if b then b := FServer.FDisconnectEx(Handle, nil, TF_REUSE_SOCKET, 0);
+  if b then b := FServer.FDisconnectEx(ASocket, nil, TF_REUSE_SOCKET, 0);
 
   if not b then begin
     s := ExtractSocket;
@@ -1894,6 +2045,7 @@ var
   Acceptable: bool;
   BufSz: integer;
 begin
+  iCurrentThreadID := Self.ThreadID;
   repeat
     WaitForSingleObject(FEvent, INFINITE);
     if Terminated then Break;
@@ -1901,11 +2053,11 @@ begin
     with FServer do
     while FActualAcceptors < FAcceptorsCount do begin
       if Terminated then Break;
-      pStruct := FStructStack.Pop;
+      PStruct := FStructStack.Pop;
       if PStruct = nil then Break;
-      FillChar(PStruct.Ovp, sizeOf(pStruct.Ovp), 0);
+      FillChar(PStruct.Ovp, sizeOf(PStruct.Ovp), 0);
       PStruct.OpCode := HPSO_ACCEPT;
-      PStruct.Client := THPServerClientSPL(FClientStack.Pop);
+      PStruct.Client := THPServerClientSPL(FClientStack.Pop);     // создание нового клиента
       if PStruct.Client = nil then begin
         try
           TObject(PStruct.Client) := FClientClass.NewInstance;
@@ -1921,10 +2073,10 @@ begin
       PStruct.Client._AddRef;
       PStruct.Client.FConnected := false;
 
-      Acceptable := PStruct.Client.Handle <> 0;
+      Acceptable := PStruct.Client.ASocket <> 0;
       if not Acceptable then begin
         with FBindAddr do s := socket(SockFamily, SockType, IPPROTO_IP);
-        PStruct.Client.FSocket := s;
+        PStruct.Client.FASocket := s;
         Acceptable := s <> INVALID_SOCKET;
         if Acceptable and Assigned(OnCreateAcceptor) then begin
           try
@@ -1939,7 +2091,7 @@ begin
       end;
 
       if Acceptable then begin
-        BufSz := PStruct.Client.BufferSize;
+        BufSz := PStruct.Client.FRecvBufSize;
         try
           if Assigned(FServer.OnClientBeforeAccept) then FServer.OnClientBeforeAccept(PStruct.Client, BufSz);
           if BufSz < 0 then BufSz := 0;
@@ -1953,10 +2105,10 @@ begin
         with PStruct.Client do
         begin
 {### 1.4.0.6 Changed june, 30, 2009}
-          if WaitConnectionData then RecBufSize := Cardinal(FConnBufSize) else RecBufSize := 0;
-          FAddrOffset := RecBufSize;    
-          Acceptable := FServer.FAcceptEx(FListener, Handle,
-                                          FpConnectBuf, RecBufSize, Addr_Buf_Len,
+          if WaitConnectionData then RecBufSize := Cardinal(FRecvBufSize) else RecBufSize := 0;
+          FAddrOffset := RecBufSize;
+          Acceptable := FServer.FAcceptEx(FListener, ASocket,
+                                          FRecvBuf, RecBufSize, Addr_Buf_Len,
                                           Addr_Buf_Len, Received, @PStruct.Ovp);
 {### /1.4.0.6}
         end;
@@ -1996,6 +2148,7 @@ var
   Acceptable: bool;
   BufSz: integer;
 begin
+  iCurrentThreadID := Self.ThreadID;
 {### 1.4.0.6 Added june, 30, 2009}
   if Assigned(FServer.OnAcceptorStart) then FServer.OnAcceptorStart(FServer);
 {### /1.4.0.6}
@@ -2006,47 +2159,51 @@ begin
     with FServer do
     while FActualAcceptors < FAcceptorsCount do begin
       if Terminated then Break;
-      pStruct := FStructStack.Pop;
-      if PStruct = nil then Break;
-      FillChar(PStruct.Ovp, sizeOf(pStruct.Ovp), 0);
+      PStruct := FStructStack.Pop;
+      if PStruct = nil then Break;    // значит израсходован лимит на объекты IOCP
+      FillChar(PStruct.Ovp, sizeOf(PStruct.Ovp), 0);
       PStruct.OpCode := HPSO_ACCEPT;
-      PStruct.Client := THPServerClient(FClientStack.Pop);
+      PStruct.Client := THPServerClient(FClientStack.Pop);      // если в стеке клиентов нет свободных, то создаём нового клиента
       if PStruct.Client = nil then begin
         try
           TObject(PStruct.Client) := FClientClass.NewInstance;
           PStruct.Client.FServer := FServer;
           PStruct.Client.Create();
+          {$IFDEF EXTLOG}
+          LogMsgXTC(1, 2, PStruct.Client.ClientID, '[DEBUG] Client Object ['+IntToHex(PStruct.Client.ObjectID, 8)+'] Create ('+IntToStr(FActualAcceptors)+'/'+IntToStr(FAcceptorsCount)+')');
+          {$ENDIF}
         except
           PStruct.Client := nil;
           FStructStack.Push(PStruct);
           Break;
         end;
       end;
-      
+
       PStruct.Client._AddRef;
       PStruct.Client.FConnected := false;
+      PStruct.Client.FClientID := 0;       // т.к. клиентский объект ещё не законнектился 
 
-      Acceptable := PStruct.Client.Handle <> 0;
+      Acceptable := PStruct.Client.ASocket <> 0;
       if not Acceptable then begin
         with FBindAddr do s := socket(SockFamily, SockType, IPPROTO_IP);
         Acceptable := s <> INVALID_SOCKET;
-        if Acceptable then
-        begin
-          PStruct.Client.FSocket := s;
+        if Acceptable then begin
+          PStruct.Client.FASocket := s;
           if Assigned(OnCreateAcceptor) then begin
             try
               OnCreateAcceptor(FServer, s);
             except
               Acceptable := false;
             end;
-          end;  
-          if Acceptable then
+          end;
+          if Acceptable then begin
             Acceptable := FPort.AddDevice(THandle(s), CP_IO);
+          end;
         end;
       end;
 
       if Acceptable then begin
-        BufSz := PStruct.Client.BufferSize;
+        BufSz := PStruct.Client.FRecvBufSize;
         try
           if Assigned(FServer.OnClientBeforeAccept) then FServer.OnClientBeforeAccept(PStruct.Client, BufSz);
           if BufSz < 0 then BufSz := 0;
@@ -2059,22 +2216,26 @@ begin
         with PStruct.Client do
         begin
 {### 1.4.0.6 Changed june, 30, 2009}
-          if WaitConnectionData then RecBufSize := Cardinal(FConnBufSize) else RecBufSize := 0;
-          FAddrOffset := RecBufSize;
-          Acceptable := FServer.FAcceptEx(FListener, Handle,
-                                          FpConnectBuf, RecBufSize, Addr_Buf_Len,
+          if WaitConnectionData then RecBufSize := Cardinal(FRecvBufSize) else RecBufSize := 0;
+          FAddrOffset := RecBufSize;  // при 0 функция AcceptEx не ждёт пока клиент пришлет данные, и считает операцию завершившейся сразу после подключения клиента, как функция accept.
+          //LogMsg1TC(2, PStruct.Client.ClientID, '[DEBUG] AcceptEx RecBufSize='+IntToStr(RecBufSize));
+          Acceptable := FServer.FAcceptEx(FListener, ASocket,
+                                          FRecvBuf, RecBufSize, Addr_Buf_Len,
                                           Addr_Buf_Len, Received, @PStruct.Ovp);
 {### /1.4.0.6}
         end;
         Acceptable := Acceptable or (WSAGetLastError = WSA_IO_PENDING);
-        if not Acceptable then
-          OutputDebugString(PChar('Accept error = ' + IntToStr(WSAGetLastError)));
+        if not Acceptable then begin
+          OutputDebugString(PChar(ODSPrefix1+'[ERROR] Accept error: '+IntToStr(WSAGetLastError)));
+          LogMsgXTC(3, 0, PStruct.Client.ClientID, '[ERROR] Accept error: '+IntToStr(WSAGetLastError));
+        end;
       end;
 
       if not Acceptable then begin
         s := PStruct.Client.ExtractSocket;
         if s <> 0 then closesocket(s);
-        FClientStack.Push(PStruct.Client);
+        // AcceptEx неудался, но мы запомним созданный объект клиента, что бы при следующей итерации AcceptThread использовать его !!!
+        FClientStack.Push(PStruct.Client);    // возвращаем клиентский объект в общий стек
         FStructStack.Push(PStruct);
         PStruct.Client._Release;
 {### 1.4.0.6 Added june, 30, 2009}
@@ -2089,6 +2250,7 @@ begin
 
   until Terminated;
 
+  FServer.LogMsgXT(1, 2, '[DEBUG] AcceptThread EXIT');
   ClearClientsStack(FServer.FClientStack);
 {### 1.4.0.6 Added june, 30, 2009}
   if Assigned(FServer.OnAcceptorEnd) then FServer.OnAcceptorEnd(FServer);
@@ -2097,7 +2259,8 @@ end;
 
 { THPServerClient }
 
-procedure THPServerClient.Disconnect;
+{ -------- original version  ------------------------------
+procedure THPServerClient.Disconnect(Reason: Integer = 0);
 var
   P: PHPSockIOStruct;
   s: TSocket;
@@ -2105,8 +2268,7 @@ var
   ErrCode: integer;
 begin
   _AddRef;
-  if not LongBool(InterlockedExchange(integer(FConnected), integer(LongBool(false)))) then
-  begin
+  if not LongBool(InterlockedExchange(integer(FConnected), integer(LongBool(false)))) then begin
     _Release;
     Exit;
   end;
@@ -2114,8 +2276,7 @@ begin
   P := ExchangeStruct(nil);
   if P = nil then P := Server.FStructStack.Pop;
   b := Assigned(P);
-  if b then
-  begin
+  if b then begin
     FillChar(P.Ovp, SizeOf(P.Ovp), 0);
     P.CompletionKey := 0;
     P.OpCode := HPSO_DISCONNECT;
@@ -2123,15 +2284,13 @@ begin
     b := Assigned(Server.FDisconnectEx);
   end;
 
-  if b then
-  begin
-    b := FServer.FDisconnectEx(Handle, POverlapped(P), TF_REUSE_SOCKET, 0);
+  if b then begin
+    b := FServer.FDisconnectEx(ASocket, POverlapped(P), TF_REUSE_SOCKET, 0);
     ErrCode := WSAGetLastError;
-    if not b then b := (WSA_IO_PENDING = ErrCode);
+    if not b then b := (ErrCode = WSA_IO_PENDING);
   end;
 
-  if not b then
-  begin
+  if not b then begin
     if P <> nil then Server.FStructStack.Push(P);
     s := ExtractSocket;
     closesocket(s);
@@ -2143,46 +2302,118 @@ begin
       except
         _Release;
       end;
-    end;  
+    end;
     _Release;
   end;
 end;
+}
+{ -------- new version (под WINE) ------------------------------}
+procedure THPServerClient.Disconnect(Reason: Integer = 0);
+var
+  P: PHPSockIOStruct;
+  s: TSocket;
+  b: boolean;
+  ErrCode: integer;
+  ss: String;
+begin
+  _AddRef;       // увеличение счётчика имеет смысл лишь при использовании  DisconnectEx
+  if not LongBool(InterlockedExchange(integer(FConnected), integer(LongBool(false)))) then begin
+    _Release;
+    Exit;
+  end;
 
-function THPServerClient.ReadBuffer(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
+  P := ExchangeStruct(nil);
+  if P = nil then P := Server.FStructStack.Pop;
+  if P <> nil then Server.FStructStack.Push(P);
+  s := ExtractSocket;    // отбираем у клиента сокет (теперь в хранилище 0)
+  closesocket(s);
+  Server.FConnections.Remove(Self);
+  if Assigned(FServer.OnClientDisconnect) then begin
+    try
+      FServer.OnClientDisconnect(Self);
+      FServer.FClientStack.Push(Self);        // возвращаем клиентский объект в общий стек
+    except
+      _Release;   // на втором _Release будет вызван Destroy
+    end;
+  end;
+  _Release;
+end;
+
+function THPServerClient.ReadBufferEx(var Buffers: TWsaBuf; BufCount, CompletionKey: Integer; DMode: Integer; var AValue: Integer): Integer;
 var
   P: PHPSockIOStruct;
   BT, Flags: Cardinal;
 begin
   _AddRef;
+  AValue := -256;
   P := ExchangeStruct(nil);
   if P = nil then P := Server.FStructStack.Pop;
-  if P = nil then
-  begin
+  if P = nil then begin
     Result := ERROR_OUTOFMEMORY;
+    if (DMode and 1) <> 0 then Disconnect;
     _Release;
     Exit;
   end;
+  AValue := 0;  // OK
   FillChar(P.Ovp, SizeOf(P.Ovp), 0);
   P.CompletionKey := CompletionKey;
   P.OpCode := HPSO_READ;
   P.Client := Self;
+
   Flags := 0;
-  Result := WSARecv(Handle, Buffers, BufCount, BT, Flags, POverlapped(P), nil);
-  if Result = SOCKET_ERROR then
-  begin
-    Result := WSAGetLastError;
-    if Result = WSA_IO_PENDING then begin
-      Result := 0;
-    end else begin
-      P := ExchangeStruct(P);
-      if P <> nil then FServer.FStructStack.Push(P);
-      if Result <> WSAEWOULDBLOCK then Disconnect;
-    end;
-  end else begin
-    Result := 0;
+  Result := WSARecv(ASocket, Buffers, BufCount, BT, Flags, POverlapped(P), nil);
+  if Result = 0 then begin
+    // MSDN: If no error occurs and the receive operation has completed immediately, WSARecv returns zero.
+    //       In this case, the completion routine will have already been scheduled to be called once the calling thread is in the alertable state
+    AValue := 0;     // значит WSARecv сразу всё что нужно прочитала из буфера
+    // далее будет исполняться код из WorkThread HPSO_READ
+    Exit;
   end;
-  if Result <> 0 then _Release;  
+  if Result <> SOCKET_ERROR then begin
+    AValue := -3;
+    Server.LogMsgXTC(3, 0, ClientID, '[ERROR] WSARecv ERROR: '+IntToStr(Result));
+    P := ExchangeStruct(P);
+    if P <> nil then FServer.FStructStack.Push(P);
+    if (DMode and 2) <> 0 then Disconnect;
+    _Release;
+    Exit;
+  end;
+  Result := WSAGetLastError;
+  if Result = WSA_IO_PENDING then begin
+    Result := 0;        // функция WSARecv начала выполняться в фоновом режиме
+    AValue := 1;        // укажем что мы "вошли" в IOCP обработчик
+    //Server.LogMsg1TC(2, ClientID, '[DEBUG] WSARecv == WSA_IO_PENDING');
+    Exit;
+  end;
+  P := ExchangeStruct(P);
+  if P <> nil then FServer.FStructStack.Push(P);
+  {$IFDEF EXTLOG}
+  Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] After WSARecv: Client Release !!! ('+IntToStr(Result)+')');
+  {$ENDIF}
+  if Result = WSAEWOULDBLOCK then begin
+    // при WSAEWOULDBLOCK (MSDN):
+    // Overlapped sockets: there are too many outstanding overlapped I/O requests.
+    // Nonoverlapped sockets: The socket is marked as nonblocking and the receive operation cannot be completed immediately.
+    AValue := -5;
+    Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] WSARecv Error: WSAEWOULDBLOCK '+IntToStr(Result));
+    if (DMode and 4) <> 0 then Disconnect;
+    _Release;
+    Exit;
+  end;
+  AValue := -4;
+  {$IFDEF EXTLOG}
+  Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] WSARecv Error: WSA_'+IntToStr(Result));  
+  {$ENDIF}
+  if (DMode and 2) <> 0 then Disconnect;
+  _Release;
 end;
+
+function THPServerClient.ReadBuffer(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
+var
+  v: Integer;
+begin
+  Result := ReadBufferEx(Buffers, BufCount, CompletionKey, 2, v);
+end;  
 
 function THPServerClient.WriteBuffer(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
 var
@@ -2192,8 +2423,7 @@ begin
   _AddRef;
   P := ExchangeStruct(nil);
   if P = nil then P := Server.FStructStack.Pop;
-  if P = nil then
-  begin
+  if P = nil then begin
     Result := ERROR_OUTOFMEMORY;
     _Release;
     Exit;
@@ -2202,21 +2432,69 @@ begin
   P.CompletionKey := CompletionKey;
   P.OpCode := HPSO_WRITE;
   P.Client := Self;
-  Result := WSASend(Handle, Buffers, BufCount, BT, 0, POverlapped(P), nil);
-  if Result = SOCKET_ERROR then
-  begin
+  Result := WSASend(ASocket, Buffers, BufCount, BT, 0, POverlapped(P), nil);
+  if Result = SOCKET_ERROR then begin
     Result := WSAGetLastError;
     if Result = WSA_IO_PENDING then begin
-      Result := 0;
+      Result := 0;             //  In this case, lpNumberOfBytesSent is not updated. (MSDN)
     end else begin
       P := ExchangeStruct(P);
       if P <> nil then FServer.FStructStack.Push(P);
+      {$IFDEF EXTLOG}
+      Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] WSASend Error: '+IntToStr(Result));
+      {$ENDIF}
       if Result <> WSAEWOULDBLOCK then Disconnect;
     end;
   end else begin
     Result := 0;
   end;
-  if Result <> 0 then _Release;
+  if Result <> 0 then begin
+    {$IFDEF EXTLOG}
+    Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] After WSASend: Client Release !!! ('+IntToStr(Result)+')');
+    {$ENDIF}
+    _Release;
+  end;
+end;
+
+function THPServerClient.WriteBuffer2(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
+var
+  P: PHPSockIOStruct;
+  BT: Cardinal;
+begin
+  _AddRef;
+  P := ExchangeStruct2(nil);
+  if P = nil then P := Server.FStructStack2.Pop;
+  if P = nil then begin
+    Result := ERROR_OUTOFMEMORY;
+    _Release;
+    Exit;
+  end;
+  FillChar(P.Ovp, SizeOf(P.Ovp), 0);
+  P.CompletionKey := CompletionKey;
+  P.OpCode := HPSO_WRITE_ADV;
+  P.Client := Self;
+  Result := WSASend(ASocket, Buffers, BufCount, BT, 0, POverlapped(P), nil);
+  if Result = SOCKET_ERROR then begin
+    Result := WSAGetLastError;
+    if Result = WSA_IO_PENDING then begin
+      Result := 0;             //  In this case, lpNumberOfBytesSent is not updated. (MSDN)
+    end else begin
+      P := ExchangeStruct2(P);
+      if P <> nil then FServer.FStructStack2.Push(P);
+      {$IFDEF EXTLOG}
+      Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] WSASend2 Error: '+IntToStr(Result));
+      {$ENDIF}
+      if Result <> WSAEWOULDBLOCK then Disconnect;
+    end;
+  end else begin
+    Result := 0;
+  end;
+  if Result <> 0 then begin
+    {$IFDEF EXTLOG}
+    Server.LogMsgXTC(1, 2, ClientID, '[DEBUG] After WSASend2: Client Release !!! ('+IntToStr(Result)+')');
+    {$ENDIF}
+    _Release;
+  end;
 end;
 
 function THPServerClient.Transmit(hFile: THandle; BytesToWrite, BytesPerSend: DWORD;
@@ -2265,7 +2543,7 @@ begin
     Flag := TF_USE_KERNEL_APC;
   end;
 
-  if not Server.FTransmitFile(Handle, hFile, BytesToWrite, BytesPerSend, @P.Ovp, pTransmitBuffers, Flag) then
+  if not Server.FTransmitFile(ASocket, hFile, BytesToWrite, BytesPerSend, @P.Ovp, pTransmitBuffers, Flag) then
   begin
     Result := WSAGetLastError;
     if Result = WSA_IO_PENDING then begin
@@ -2335,6 +2613,7 @@ begin
 
   FClientStack.Closed := true;
   FStructStack.Closed := true;
+  FStructStack2.Closed := true;
 
   StartTime := GetTickCount;
   closesocket(InterlockedExchange(FListener, 0));
@@ -2376,6 +2655,7 @@ begin
   until false;
 
   FStructStack.Clear;
+  FStructStack2.Clear;
   repeat
     Client := FConnections.Pop;
     if not Assigned(Client) then Break;
@@ -2394,10 +2674,13 @@ end;
 constructor THPServerSocket.Create{$IFDEF WITH_GUI}(AOwner: TComponent){$ENDIF};
 begin
   inherited;
+  FOnClientFinalizeRef1 := nil;
   FStructStack := TStructStack.Create(DefStuctStackCapacity, SizeOf(THPSockIOStruct));
+  FStructStack2 := TStructStack.Create(DefStuctStackCapacity, SizeOf(THPSockIOStruct));
   FPort := TCompletionPort.Create();
   FThreadsList := THPThreadList.Create;
   FDecreaseCompleteEvent := CreateEvent(nil, false, false, nil);
+  FChangeRemoteLocalAddr := False;
 end;
 
 function THPServerSocket.DecreaseWorkThreads: boolean;
@@ -2431,9 +2714,10 @@ end;
 destructor THPServerSocket.Destroy;
 begin
   inherited;
-  if 0 <> FDecreaseCompleteEvent then CloseHandle(FDecreaseCompleteEvent);
+  if FDecreaseCompleteEvent <> 0 then CloseHandle(FDecreaseCompleteEvent);
   FPort.Free;
   FStructStack.Free;
+  FStructStack2.Free;
   FThreadsList.Free;
 end;
 
@@ -2451,8 +2735,13 @@ begin
       then Min := FMinWorkThreads
       else Min := DefThreadsPerProcessor * FPort.ProcessorsCount;
     for n := 0 to Pred(Min) do AddWorkThread;
-    FAcceptThread := TAcceptThread.Create(Self, false);
+    FAcceptThread := TAcceptThread.Create(Self, False);
     AcceptorPriority := FAcceptorPriority;
+    if FMinWorkThreads > 0 then begin
+      LogMsgXT(1, 2, '[DEBUG] AcceptThread started!  Created '+IntToStr(Min)+' worked threads.');
+    end else begin
+      LogMsgXT(1, 2, '[DEBUG] AcceptThread started!  Created '+IntToStr(Min)+' worked threads ('+IntToStr(FPort.ProcessorsCount)+' processors).');
+    end;
   except
     with FThreadsList.LockList do begin
       try
@@ -2545,14 +2834,20 @@ var
   WaitRslt, DecreaseFlag: boolean;
   Key, ErrorCode: integer;
   s: TSocket;
+  iOpCode: Integer;
+  bb: Boolean;
 begin
   InterlockedIncrement(FServer.FWorkThreads);
   DecreaseFlag := false;
+  iCurrentThreadID := Self.ThreadID;
+  GetCurrentThreadNumber(iCurrentThreadID);
   if Assigned(FServer.FOnThreadStart) then FServer.OnThreadStart(FServer);
 
   try
     repeat
-      CP := CP_TERMINATE;  DecreaseFlag := false;
+      iOpCode := -1;
+      CP := CP_TERMINATE;
+      DecreaseFlag := false;
       WaitRslt := FServer.FPort.WaitCompletion(BytesTransfered, CP, POvp);
       InterlockedIncrement(FServer.FActiveThreads);
 
@@ -2590,8 +2885,9 @@ begin
                 try
                   FServer.OnUserAsyncCall(FServer, BytesTransfered, POvp);
                 except
-                  on E: Exception do if Assigned(FServer.OnThreadException) then
-                    FServer.OnThreadException(nil, E.Message, E.ClassName, ExceptAddr);
+                  on E: Exception do
+                    if Assigned(FServer.OnThreadException) then
+                      FServer.OnThreadException(nil, E.Message, E.ClassName, ExceptAddr);
                 end;
               end;
               Continue;
@@ -2603,8 +2899,7 @@ begin
           begin
             if Assigned(FServer.OnUserDeviceCompletion) then begin
               try
-                FServer.OnUserDeviceCompletion(FServer, WaitRslt,
-                  BytesTransfered, CP, POvp);
+                FServer.OnUserDeviceCompletion(FServer, WaitRslt, BytesTransfered, CP, POvp);
               except
                 on E: Exception do if Assigned(FServer.OnThreadException) then
                   FServer.OnThreadException(nil, E.Message, E.ClassName, ExceptAddr);
@@ -2622,30 +2917,38 @@ begin
         C := PStruct.Client;
         try
           try
-            case PStruct.OpCode of
+            iOpCode := Integer(PStruct.OpCode);
+            case THPSockOpCode(iOpCode) of
 
               HPSO_ACCEPT:
               begin
                 FServer.ClientAccepted;
-                if not FServer.Active or (ErrorCode <> ERROR_SUCCESS) then
-                begin
+                if not FServer.Active or (ErrorCode <> ERROR_SUCCESS) then begin
                   s := C.ExtractSocket;
                   closesocket(s);
-                  FServer.FClientStack.Push(C);
+                  FServer.FClientStack.Push(C);       // возвращаем клиентский объект в общий стек
                   FServer.FStructStack.Push(PStruct);
-                end else
-                begin
-                  C.FConnected := true;
-                  FServer.FConnections.Push(C);
-                  C.ExtractAddresses;
+                end else begin
+                  Integer(C.FClientID) := Windows.InterlockedIncrement(Integer(GlobClientIDs));
+                  C.FConnected := True;
+
+                  FServer.FConnections.Push(C);  // добавляем ссылку из списка FClientStack в список подключившихся клиентов
+
+                  // В WinSock не документируется, в какую именно часть буфера помещаются адрес клиента и принявшего его сокета.
+                  // Вместо этого предоставляется функция GetAcceptExSockAddrs  (ExtractAddresses)
+                  C.ExtractAddresses(FServer.FChangeRemoteLocalAddr);
                   P := C.ExchangeStruct(PStruct);
                   if P <> nil then FServer.FStructStack.Push(P);
-                  if Assigned(FServer.OnClientConnect) then
-                  try
-                    FServer.OnClientConnect(C, C.FpConnectBuf, integer(BytesTransfered));
-                  except
-                    C.Disconnect;
+                  if FServer.BindSocketToIocpAfterAccept then begin
+                    bb := FServer.FPort.AddDevice(THandle(C.ASocket), CP_IO);    // нужно, если юзается под WINE
                   end;
+                  if Assigned(FServer.OnClientConnect) then begin
+                    try
+                      FServer.OnClientConnect(C, C.FRecvBuf, Integer(BytesTransfered));
+                    except
+                      C.Disconnect;
+                    end;
+                  end;  
                 end;
               end; // HPSO_ACCEPT
 
@@ -2654,6 +2957,9 @@ begin
                 Key := PStruct.CompletionKey;
                 P := C.ExchangeStruct(PStruct);
                 if P <> nil then FServer.FStructStack.Push(P);
+                {$IFDEF EXTLOG}
+                if not WaitRslt then FServer.LogMsgXTC(1, 2, C.ClientID, '[DEBUG] IOCP HPSO_READ Result=0; ErrorCode='+IntToStr(ErrorCode)); // DO-
+                {$ENDIF}
                 if Assigned(FServer.OnReadComplete) then begin
                   try
                     FServer.OnReadComplete(C, BytesTransfered, Key, ErrorCode);
@@ -2662,11 +2968,11 @@ begin
                   end;
                 end;
 
-                if WaitRslt then
-                begin
+                if WaitRslt then begin
                   if BytesTransfered = 0 then C.Disconnect;
-                end else
+                end else begin
                   if ErrorCode <> WSAEWOULDBLOCK then C.Disconnect;
+                end;
               end; // HPSO_READ
 
               HPSO_WRITE,
@@ -2675,20 +2981,46 @@ begin
                 Key := PStruct.CompletionKey;
                 P := C.ExchangeStruct(PStruct);
                 if P <> nil then FServer.FStructStack.Push(P);
+                {$IFDEF EXTLOG}
+                if not WaitRslt then FServer.LogMsgXTC(1, 2, C.ClientID, '[DEBUG] IOCP HPSO_WRITE Result=0; ErrorCode='+IntToStr(ErrorCode));
+                {$ENDIF}
                 if Assigned(FServer.OnWriteComplete) then begin
                   try
                     FServer.OnWriteComplete(C, BytesTransfered, Key, ErrorCode);
                   except
                     C.Disconnect;
                   end;
-                end;  
+                end;
 
-                if WaitRslt then
-                begin
+                if WaitRslt then begin
                   if BytesTransfered = 0 then C.Disconnect;
-                end else
+                end else begin
                   if ErrorCode <> WSAEWOULDBLOCK then C.Disconnect;
+                end;
               end; // HPSO_WRITE
+
+              HPSO_WRITE_ADV:
+              begin
+                Key := PStruct.CompletionKey;
+                P := C.ExchangeStruct2(PStruct);
+                if P <> nil then FServer.FStructStack2.Push(P);
+                {$IFDEF EXTLOG}
+                if not WaitRslt then FServer.LogMsgXTC(1, 2, C.ClientID, '[DEBUG] IOCP HPSO_WRITE_ADV Result=0; ErrorCode='+IntToStr(ErrorCode));
+                {$ENDIF}
+                if Assigned(FServer.OnWriteComplete2) then begin
+                  try
+                    FServer.OnWriteComplete2(C, BytesTransfered, Key, ErrorCode);
+                  except
+                    C.Disconnect;
+                  end;
+                end;
+
+                if WaitRslt then begin
+                  if BytesTransfered = 0 then C.Disconnect;
+                end else begin
+                  if ErrorCode <> WSAEWOULDBLOCK then C.Disconnect;
+                end;
+              end; // HPSO_WRITE_ADV
 
               HPSO_TRANSMIT_DISCONNECT:
               begin
@@ -2711,12 +3043,12 @@ begin
                   if Assigned(FServer.OnClientDisconnect) then begin
                     try
                       FServer.OnClientDisconnect(C);
-                      FServer.FClientStack.Push(C);
+                      FServer.FClientStack.Push(C);     // возвращаем клиентский объект в общий стек
                     except
                       C._Release;
                     end;
                   end else begin
-                    FServer.FClientStack.Push(C);
+                    FServer.FClientStack.Push(C);      // возвращаем клиентский объект в общий стек
                   end;  
 
                   if s <> 0 then closesocket(s);
@@ -2732,12 +3064,12 @@ begin
                 if Assigned(FServer.OnClientDisconnect) then begin
                   try
                     FServer.OnClientDisconnect(C);
-                    FServer.FClientStack.Push(C);
+                    FServer.FClientStack.Push(C);     // возвращаем клиентский объект в общий стек
                   except
                     C._Release;
                   end;
                 end else begin
-                  FServer.FClientStack.Push(C);
+                  FServer.FClientStack.Push(C);    // возвращаем клиентский объект в общий стек
                 end;  
 
               end; // HPSO_DISCONNECT

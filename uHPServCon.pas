@@ -28,10 +28,12 @@ type
     function ServerOpen(const Port: String): Boolean;
     function ServerClose: Boolean;
     procedure HPSrvClientBeforeAccept(AClient: TCustomHPServerClient; var ConnBufSize: Integer);
-    procedure HPSrvClientConnect(AClient: TCustomHPServerClient; pConnectionData: PByte; ConnectionDataLen: Integer);
+    procedure HPSrvClientConnect(AClient: TCustomHPServerClient; ConnectionData: PChar; ConnectionDataLen: Integer);
     procedure HPSrvClientDisconnect(AClient: TCustomHPServerClient);
+    procedure HPSrvClientFinalizeRef1(AClient: TCustomHPServerClient);
     procedure HPSrvReadComplete(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey, Error: Integer);
     procedure HPSrvWriteComplete(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey, Error: Integer);
+    procedure HPSrvExceptionEvent(AClient: TCustomHPServerClient; const Message: String; const ExceptClass: String; ExceptAddress: Pointer);
     procedure HPSrvThreadStart;
     procedure HPSrvThreadEnd;
   private
@@ -69,9 +71,12 @@ uses
 
 { THPServerCon }
 
+// после коннекта юзера ожидается приём от него N количество байтиков прежде чем проставить флажок Connected
+// см. настройку WaitConnectionData
+// здесь задаётся размер буфера под это и вообще размер буфера, с которым работает функция AcceptEx
 procedure THPServerCon.HPSrvClientBeforeAccept(AClient: TCustomHPServerClient; var ConnBufSize: Integer);
 begin
-  ConnBufSize:= $10000 - 2 * Addr_Buf_Len;
+  ConnBufSize := $10000 - 2 * Addr_Buf_Len;
 end;
 
 function THPServerCon.ServerOpen(const Port: String): Boolean;
@@ -80,7 +85,7 @@ var
   w: integer;
 begin
   Result := False;
-  ClientIDs := 0;
+  GlobClientIDs := 0;
   if not DirectoryExists(ExePath+RootDir) then begin
     Writeln('Error: Directory "'+RootDir+'" not found !!!');
     Exit;
@@ -95,8 +100,8 @@ begin
   try
     HPServerSocket.Open;
     Result := True;
-    HPServerSocket.LogMsg(1, 1, $FFFFFFFF, 'HPServerSocket Start !!!');
-    if LogBuffer.FDebugLog then OutputDebugString(PChar('HPServerSocket Start !!!'));
+    HPServerSocket.LogMsgXT(1, 1, 'HPServerSocket Start !!!');
+    OutputDebugString(PChar(ODSPrefix1+'HPServerSocket Start !!!'));
   except
     on E: Exception do begin
       if Assigned(FGarbageThread) then begin
@@ -105,9 +110,11 @@ begin
       end;
       if E is ESockAddrError then begin
         if (ESockAddrError(E).ErrCode = WSATYPE_NOT_FOUND) or (ESockAddrError(E).ErrCode = WSANO_DATA) then begin
-          Writeln('Error: Unknown service name!');
+          //Writeln('Error: Unknown service name!');
+          HPServerSocket.LogMsgXS(1, 0, '[ERROR] ServerOpen: Unknown service');
         end else begin
-          Writeln('Error: '+E.Message);
+          //Writeln('Error: '+E.Message);
+          HPServerSocket.LogMsgXS(1, 0, '[ERROR] ServerOpen: Error: '+E.Message);
         end;
         Exit;
       end else begin
@@ -124,48 +131,82 @@ begin
     FreeAndNil(FGarbageThread);
   end;
   HPServerSocket.Close(INFINITE);   //HPServerSocket.Close(3000);
-  HPServerSocket.LogMsg(1, 1, $FFFFFFFF, 'HPServerSocket Close !!!');
-  if LogBuffer.FDebugLog then OutputDebugString(PChar('HPServerSocket Close !!!'));
+  HPServerSocket.LogMsgXT(1, 1, 'HPServerSocket Close !!!');
+  OutputDebugString(PChar(ODSPrefix1+'HPServerSocket Close !!!'));  // DO-
 end;
 
-procedure THPServerCon.HPSrvClientConnect(AClient: TCustomHPServerClient; pConnectionData: PByte; ConnectionDataLen: Integer);
+procedure THPServerCon.HPSrvClientConnect(AClient: TCustomHPServerClient; ConnectionData: PChar; ConnectionDataLen: Integer);
 var
-  ID: Integer;
+  CID: Integer;
+  s: String;
 begin
-  ID := THttpSrvClient(AClient).ClientID;
-  HPServerSocket.LogMsg(1, 1, ID, 'Connect     IP='+THttpSrvClient(AClient).RemoteAddress);
+  CID := THttpSrvClient(AClient).ClientID;
+  HPServerSocket.LogMsgXTC(1, 1, CID, 'Connect     IP='+THttpSrvClient(AClient).RemoteAddress);
   with THttpSrvClient(AClient) do begin
     Initialize;
-    ProcessBuffer(PAnsiChar(pConnectionData), ConnectionDataLen);
+    ProcessBuffer(ConnectionData, ConnectionDataLen);
   end;
 end;
 
 procedure THPServerCon.HPSrvClientDisconnect(AClient: TCustomHPServerClient);
 var
-  ID: Integer;
+  CID: Integer;
 begin
-  ID := THttpSrvClient(AClient).ClientID;
-  HPServerSocket.LogMsg(1, 1, ID, 'Disconnect  IP='+THttpSrvClient(AClient).RemoteAddress);
+  CID := THttpSrvClient(AClient).ClientID;
+  HPServerSocket.LogMsgXTC(1, 1, CID, 'Disconnect  IP='+THttpSrvClient(AClient).RemoteAddress);
   THttpSrvClient(AClient).Finalize;
+end;
+
+procedure THPServerCon.HPSrvClientFinalizeRef1(AClient: TCustomHPServerClient);
+begin
+  //THttpSrvClient(AClient).FinalizeRef1;
 end;
 
 procedure THPServerCon.HPSrvReadComplete(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey, Error: Integer);
 var
-  ID: Integer;
+  ActClient: THttpSrvClient absolute AClient;
 begin
-  ID := THttpSrvClient(AClient).ClientID;
-  HPServerSocket.LogMsg(1, 1, ID, 'ReadComplete Size='+IntToStr(BytesTransfered));
   if Error <> 0 then begin
+    {$IFDEF EXTLOG}
+    HPServerSocket.LogMsgXTC(1, 1, ActClient.ClientID, 'Error on ReadComplete: '+IntToStr(Error)+' (size='+IntToStr(BytesTransfered)+')');
+    {$ENDIF}
     AClient.Disconnect;
   end else begin
-    with THttpSrvClient(AClient) do
-      ProcessBuffer(PAnsiChar(Buffer), Integer(BytesTransfered));
-  end;    
+    if BytesTransfered > 0 then begin  // при 0 где нужно уже делается дисконнект !!!
+      {$IFDEF EXTLOG}
+      HPServerSocket.LogMsgXTC(1, 1, ActClient.ClientID, 'ReadComplete (size='+IntToStr(BytesTransfered)+') --> ProcessBuffer ...');
+      {$ENDIF}
+      ActClient.ProcessBuffer(ActClient.RecvBuf, Integer(BytesTransfered));
+    end;
+  end;
 end;
 
 procedure THPServerCon.HPSrvWriteComplete(AClient: TCustomHPServerClient; BytesTransfered: Cardinal; CompletionKey, Error: Integer);
+var
+  CID: Integer;
 begin
-  THttpSrvClient(AClient).DoWriteComplete(BytesTransfered, CompletionKey, Error);
+  CID := THttpSrvClient(AClient).ClientID;
+  if Error <> 0 then begin
+    {$IFDEF EXTLOG}
+    HPServerSocket.LogMsgXTC(1, 1, CID, 'Error on WriteComplete: '+IntToStr(Error)+' (size='+IntToStr(BytesTransfered)+')');
+    {$ENDIF}
+    AClient.Disconnect($62);
+  end else begin
+    {$IFDEF EXTLOG}
+    HPServerSocket.LogMsgXTC(1, 1, CID, 'WriteComplete (size='+IntToStr(BytesTransfered)+') --> DoWriteComplete ...');
+    {$ENDIF}
+    THttpSrvClient(AClient).DoWriteComplete(BytesTransfered, CompletionKey, Error);
+  end;
+end;
+
+procedure THPServerCon.HPSrvExceptionEvent(AClient: TCustomHPServerClient; const Message: String; const ExceptClass: String; ExceptAddress: Pointer);
+var
+  ActClient: THttpSrvClient absolute AClient;
+begin
+  try
+    HPServerSocket.LogMsgXTC(3, 0, ActClient.ClientID, '[ERROR] '+ExceptClass+': '+Message+' (Addr '+IntToHex(Cardinal(ExceptAddress), 8)+')');
+  except
+  end;
 end;
 
 constructor THPServerCon.Create(const AExeDir: String);
@@ -173,13 +214,15 @@ begin
   ExeDir := AExeDir;
   ExePath := AExeDir + '\';
   LogBuffer := TTempLogBuffer.Create;
-  LogBuffer.FDebugLog := False;
+  LogBuffer.FDebugLog := True;
   LogBuffer.SetLogParams(1, True, True, ExePath+'logs', 'main_');
+  LogBuffer.SetLogParamsODS(1, ODSPrefix1);
+  LogBuffer.SetLogParamsODS(2, ODSPrefix2);
   LogBuffer.CreateThreadWriteLog;
   LogBuffer.StartThreadWriteLog;
   HPServerSocket := THPServerSocket.Create;
-  LogBuffer.AddLine(1, 1, $FFFFFFFF, $FFFFFFFF, 'HPServerSocket Create !!!');
-  if LogBuffer.FDebugLog then OutputDebugString(PChar('HPServerSocket Create !!!'));
+  LogBuffer.AddLine1S(1, 'HPServerSocket Create !!!');
+  OutputDebugString(PChar(ODSPrefix1+'HPServerSocket Create !!!'));
 end;
 
 procedure THPServerCon.ServerLogMsg(ModuleID, LogLevel: Byte; ThreadID, ClientID: Cardinal; const Line: String);
@@ -194,10 +237,10 @@ end;
 
 destructor THPServerCon.Destroy; 
 begin
-  LogBuffer.AddLine(1, 1, $FFFFFFFF, $FFFFFFFF, 'HPServerSocket Destroy !!!');
+  LogBuffer.AddLine1S(1, 'HPServerSocket Destroy !!!');
   HPServerSocket.Free;
   if LogBuffer.DestroyThreadWriteLog then LogBuffer.Free;
-  if LogBuffer.FDebugLog then OutputDebugString(PChar('HPServerSocket Destroy !!!'));
+  OutputDebugString(PChar(ODSPrefix1+'HPServerSocket Destroy !!!'));
 end;
 
 procedure THPServerCon.HPSrvThreadStart;
@@ -236,6 +279,7 @@ end;
 
 procedure TGarbageThread.Execute;
 begin
+  iCurrentThreadID := Self.ThreadID;
   repeat
     if WaitForSingleObject(FTerminateEvent, 60000) = WAIT_TIMEOUT then begin
       FServer.EnumerateConnections(EnumClients);

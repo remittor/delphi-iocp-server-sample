@@ -1,0 +1,45 @@
+<2012-12-17 23:43:49>     HPServerSocket Create !!!
+<2012-12-17 23:43:49>  00 [DEBUG] AcceptThread started!  Created 4 worked threads (1 processors).
+<2012-12-17 23:43:49>  00 HPServerSocket Start !!!
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000001] Create (0/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000002] Create (1/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000003] Create (2/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000004] Create (3/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000005] Create (4/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000006] Create (5/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000007] Create (6/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000008] Create (7/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000009] Create (8/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000A] Create (9/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000B] Create (10/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000C] Create (11/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000D] Create (12/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000E] Create (13/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000000F] Create (14/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000010] Create (15/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000011] Create (16/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000012] Create (17/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000013] Create (18/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000014] Create (19/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000015] Create (20/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000016] Create (21/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000017] Create (22/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000018] Create (23/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [00000019] Create (24/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000001A] Create (25/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000001B] Create (26/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000001C] Create (27/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000001D] Create (28/30)
+<2012-12-17 23:43:49>  05 [00000000] [DEBUG] Client Object [0000001E] Create (29/30)
+<2012-12-17 23:44:12>  04 [00000001] Connect     IP=127.0.0.1
+<2012-12-17 23:44:12>  04 [00000001] ProcessBuffer - IN
+<2012-12-17 23:44:12>  04 [00000001] ParseCmdLine - Line GET / HTTP/1.1
+<2012-12-17 23:44:12>  04 [00000001] ProcessBuffer - complete
+<2012-12-17 23:44:12>  04 [00000001] ProcessRequest - IN
+<2012-12-17 23:44:12>  04 [00000001] ProcessRequest - Object /
+<2012-12-17 23:44:12>  04 [00000001] ProcessRequest - Complete
+<2012-12-17 23:44:19>  05 [DEBUG] AcceptThread EXIT
+<2012-12-17 23:44:19>  00 [00000001] Disconnect  IP=127.0.0.1
+<2012-12-17 23:44:19>  04 [00000001] [DEBUG] IOCP HPSO_READ Result=0; ErrorCode=64
+<2012-12-17 23:44:19>  00 HPServerSocket Close !!!
+<2012-12-17 23:44:19>     HPServerSocket Destroy !!!

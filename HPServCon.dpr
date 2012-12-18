@@ -14,8 +14,6 @@ var
   ParStr: String;
   Int32: Integer;
   hMutex : THandle;
-  FSecAttr: TSecurityAttributes;
-  FSecDesc: TSecurityDescriptor;
   iExitCode: Cardinal;
   bProcessTerminate: Boolean;
 
@@ -51,6 +49,7 @@ begin
   bProcessTerminate := False;
   iExitCode := 0;
 
+  Windows.SetConsoleCtrlHandler(@ConsoleProc, True);
   HPSrv := THPServerCon.Create(ExtractFileDir(ParamStr(0)));
   try
     with HPSrv.HPServerSocket do begin
@@ -64,19 +63,25 @@ begin
       OnClientDisconnect := HPSrv.HPSrvClientDisconnect;
       OnReadComplete := HPSrv.HPSrvReadComplete;
       OnWriteComplete := HPSrv.HPSrvWriteComplete;
+      OnThreadException := HPSrv.HPSrvExceptionEvent;
     end;
-    if not HPSrv.ServerOpen(IntToStr(HPServerPort)) then begin iExitCode := 10; Exit; end;
-    Windows.SetConsoleCtrlHandler(@ConsoleProc, True);
+    if not HPSrv.ServerOpen(IntToStr(HPServerPort)) then begin
+      iExitCode := 10;
+      Exit;
+    end;
     repeat
       Sleep(250);
       // ожидание команды завершения
-      if bProcessTerminate then begin iExitCode := 0; HPSrv.ServerClose; Exit; end;
+      if bProcessTerminate then begin
+        iExitCode := 0;
+        HPSrv.ServerClose;
+        Break;
+      end;
     until False;
   finally
     HPSrv.Free;
-    //CloseHandle(FChildStdinWr);
+    Windows.SetConsoleCtrlHandler(@ConsoleProc, False);
   end;
-  Writeln('--- CLOSE ---');
   Halt(iExitCode);
 end.
 
