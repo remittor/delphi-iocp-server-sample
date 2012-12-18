@@ -13,6 +13,8 @@ January, 23, 2009
 - Dynamic loading IPv6 functions for Wnn2k compatibility
 *******************************************************************************)
 
+{$DEFINE MINWINXP}
+
 interface
 
 uses
@@ -45,7 +47,7 @@ const
   WT_EXECUTELONGFUNCTION            = $00000010;
 
   WSA_IO_PENDING = ERROR_IO_PENDING;
-  SOMAXCONN2     = $7fffffff;
+  SOMAXCONN2 = $7fffffff;
 
   WSAID_DISCONNECTEX: TGUID =
     (D1: $7fda2e11; D2: $8630; D3: $436f;
@@ -72,6 +74,7 @@ type
     Dummy: Int64;
   end;
 
+{$IFNDEF MINWINXP}
   TSListFunc = record
     InitHeader: procedure (SListHeader: PSListHeader); stdcall;
     PushSListEntry: function (SListHeader: PSListHeader; SListEntry: PSListEntry): PSListEntry; stdcall;
@@ -80,6 +83,13 @@ type
     QueryDepth: function (SListHeader: PSListHeader): WORD; stdcall;
     Presents: boolean;
   end;
+{$ELSE}
+  procedure SList_InitHeader(SListHeader: PSListHeader); stdcall; external kernel32 name 'InitializeSListHead';
+  function SList_PushSListEntry(SListHeader: PSListHeader; SListEntry: PSListEntry): PSListEntry; stdcall; external kernel32 name 'InterlockedPushEntrySList';
+  function SList_PopSListEntry(SListHeader: PSListHeader): PSListEntry; stdcall; external kernel32 name 'InterlockedPopEntrySList';
+  function SList_FlushSList(SListHeader: PSListHeader): PSListEntry; stdcall; external kernel32 name 'InterlockedFlushSList';
+  function SList_QueryDepth(SListHeader: PSListHeader): WORD; stdcall; external kernel32 name 'QueryDepthSList';
+{$ENDIF}
 
 type
   ESockAddrError = class(Exception)
@@ -139,6 +149,11 @@ type
                             pTransmitBuffers: PTransmitFileBuffers;
                             dwFlags: DWORD): BOOL; stdcall;
 
+const
+  WS2_32_LIB = 'ws2_32.dll';
+  NTDLL_LIB = 'ntdll.dll';
+                              
+{$IFNDEF MINWINXP}
   TGetAddrInfo          = function (nodename, servname: PAnsiChar;
                             pHints: PAddrInfo;
                             out res: PAddrInfo): integer; stdcall;
@@ -152,21 +167,27 @@ type
   TFreeAddrInfoW        = procedure (pai: PAddrInfoW); stdcall;
 
   TGetThreadIOPendingFlag = function(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall;
-  
+
   TNtQueryInformationThread = function(hThread: THandle;
                       ThreadInformationClass: DWORD; out ThreadInformation;
                       ThreadInformationLength : ULONG;
                       ReturnLength : PULONG): DWORD; stdcall;
+{$ELSE}
+  function F_GetAddrInfo(nodename, servname: PAnsiChar;
+                            pHints: PAddrInfo;
+                            out res: PAddrInfo): integer; stdcall;  external WS2_32_LIB name 'getaddrinfo';
 
-const
-  WS2_32_LIB = 'ws2_32.dll';
+  function F_GetAddrInfoW(nodename, servname: PWideChar;
+                            pHints: PAddrInfoW;
+                            out res: PAddrInfoW): integer; stdcall; external WS2_32_LIB name 'GetAddrInfoW';
 
-{function getaddrinfo(nodename, servname: PAnsiChar;
-  pHints: PAddrInfo; out res: PAddrInfo): integer; stdcall external WS2_32_LIB;
-function GetAddrInfoW(nodename, servname: PWideChar;
-  pHints: PAddrInfoW; out res: PAddrInfoW): integer; stdcall external WS2_32_LIB;
-procedure freeaddrinfo(pai: PAddrInfo); stdcall external WS2_32_LIB;
-procedure FreeAddrInfoW(pai: PAddrInfoW); stdcall external WS2_32_LIB;  }
+  procedure F_freeaddrinfo(pai: PAddrInfo); stdcall; external WS2_32_LIB name 'freeaddrinfo';
+
+  procedure F_FreeAddrInfoW(pai: PAddrInfoW); stdcall; external WS2_32_LIB name 'FreeAddrInfoW';
+
+  function F_GetThreadIOPendingFlag(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall; external kernel32 name 'GetThreadIOPendingFlag';
+
+{$ENDIF}
 
 function WSARecv(s: TSocket; var Buffers: TWsaBuf; dwBufCount: DWORD;
               var BytesTransfered: DWORD; var Flags: DWORD;
@@ -190,7 +211,9 @@ function QueueUserWorkItem(CallbackFunc: Pointer; pContext: Pointer; Flags: ULON
 
 function GetExtensionFunc(Socket: TSocket; const FID: TGUID): pointer;
 
+{$IFNDEF MINWINXP}
 procedure InitSListFunc(var SListFunc: TSListFunc);
+{$ENDIF}
 
 procedure ResolveAddressAndPort(const HostNameOrAddr, ServiceOrPort, Proto: string; out Addr: TSockAddrIn);
 
@@ -204,6 +227,7 @@ function ResolveAddressAndPortV6(ServerSide: boolean; const HostNameOrAddr,
 function ThreadIsIoPending(hThread: THandle): bool;
 {### /Added}
 
+{$IFNDEF MINWINXP}
 var
   F_GetAddrInfo:               TGetAddrInfo               = nil;
   F_GetAddrInfoW:              TGetAddrInfoW              = nil;
@@ -216,12 +240,15 @@ var
 
 var
   _IPv6Supported: boolean = false;
+{$ENDIF}
 
 implementation
 
+{$IFNDEF MINWINXP}
 var
   HWs2_32Lib: HMODULE = 0;
   HNtDll: HMODULE = 0;
+{$ENDIF}
   
 { ESockAddrError }
 
@@ -231,6 +258,7 @@ begin
   Create(SysErrorMessage(ErrCode));
 end;
 
+{$IFNDEF MINWINXP}
 {### Added June, 30, 2009}
 function InternalGetThreadIOPending(hThread: THandle; out IOIsPending: Longbool): BOOL; stdcall;
 var
@@ -241,6 +269,7 @@ begin
   Result := (F_NtQueryInformationThread(hThread, 16, Info, SizeOf(Info), @RetLen) = 0);
   IOIsPending := (not Result) or (Info <> 0);
 end;
+{$ENDIF}
 
 function ThreadIsIoPending(hThread: THandle): bool;
 begin
@@ -307,7 +336,7 @@ var
   Rslt: integer;
   P: PAnsiChar;
 begin
-  if not _IPv6Supported then begin Result := nil; Exit; end;
+  {$IFNDEF MINWINXP}if not _IPv6Supported then begin Result := nil; Exit; end;{$ENDIF}
 
   FillChar(Hint, SizeOf(Hint), 0);
   Hint.ai_family := Family;
@@ -327,7 +356,7 @@ var
   Rslt: integer;
   P: PWideChar;
 begin
-  if not _IPv6Supported then begin Result := nil; Exit; end;
+  {$IFNDEF MINWINXP}if not _IPv6Supported then begin Result := nil; Exit; end;{$ENDIF}
 
   FillChar(Hint, SizeOf(Hint), 0);
   Hint.ai_family := Family;
@@ -340,6 +369,8 @@ begin
   if Rslt <> 0 then raise ESockAddrError.Create(Rslt);
 end;
 
+
+{$IFNDEF MINWINXP}
 procedure InitSListFunc(var SListFunc: TSListFunc);
 var
   H: HMODULE;
@@ -389,6 +420,7 @@ initialization
   InitUnit();
 
 finalization
-  FinalizeUnit(); 
+  FinalizeUnit();
+{$ENDIF}  
 
 end.
