@@ -63,7 +63,12 @@ July, 26, 2009
 *******************************************************************************)
 
 {$WARN SYMBOL_PLATFORM OFF}
-{-$DEFINE USE_SLIST}
+
+{$DEFINE MINWINXP}
+
+{$IFDEF MINWINXP}
+{$DEFINE USE_SLIST}
+{$ENDIF}
 
 interface
 
@@ -196,15 +201,15 @@ type
   THPServerClientSPL = class(TCustomHPServerClient)
   public
     procedure Disconnect; override;
-    function Write(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
-    function Read (const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
+    function WriteBuffer(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
+    function ReadBuffer(const Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): Cardinal;
   end;
 
   THPServerClient = class(TCustomHPServerClient)
   public
     procedure Disconnect; override;
-    function Write(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
-    function Read (var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
+    function WriteBuffer(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
+    function ReadBuffer(var Buffers: TWsaBuf; BufCount: integer; CompletionKey: integer): integer;
     function Transmit(hFile: THandle; BytesToWrite, BytesPerSend: DWORD;
                       pTransmitBuffers: PTransmitFileBuffers;
                       CompletionKey: integer; DisconnectClient: boolean): integer;
@@ -576,9 +581,11 @@ begin
 end;
 {$ENDIF}
 
+{$IFNDEF MINWINXP}
 {$IFDEF USE_SLIST}
 var
   SListFunc: TSListFunc = ();
+{$ENDIF}
 {$ENDIF}
 
 var
@@ -909,8 +916,9 @@ begin
   FStructStack.Closed := false;
 //  if FConnections.Count = 0 then
   SetEvent(FClientsEvent);
-  if _IPv6Supported then
-  begin
+  {$IFNDEF MINWINXP}
+  if _IPv6Supported then begin
+  {$ENDIF}
     BindAddrInfo := ResolveAddressAndPortV6(true, FAddress, FServiceOrPort, PF_INET, SOCK_STREAM);
     try
       n := 0;
@@ -936,13 +944,14 @@ begin
     finally
       F_FreeAddrInfo(BindAddrInfo);
     end;
-  end else
-  begin
+  {$IFNDEF MINWINXP}
+  end else begin
     ResolveAddressAndPort(FAddress, FServiceOrPort, 'tcp', FBindAddr.Addr);
     FBindAddr.SockFamily := AF_INET;
     FBindAddr.SockType := SOCK_STREAM;
     FBindAddr.AddrLen := SizeOf(FBindAddr.Addr);
   end;
+  {$ENDIF}
 
   with FBindAddr do FListener := socket(SockFamily, SockType, IPPROTO_IP);
   if INVALID_SOCKET = FListener then
@@ -1286,7 +1295,11 @@ var
   P: Pointer;
 begin
   repeat
+    {$IFDEF MINWINXP}
+    P := SList_PopSListEntry(@FSList);
+    {$ELSE}
     P := SListFunc.PopSListEntry(@FSList);
+    {$ENDIF}
     if P = nil then Break;
     FreeMem(P);
   until false;
@@ -1294,39 +1307,59 @@ end;
 
 constructor TStructStack.Create(ACapacity, ItemSize: integer);
 begin
-  if not SListFunc.Presents then
-    raise EHPServerException.Create(SysErrorMessage(ERROR_OLD_WIN_VERSION));
-
+  {$IFNDEF MINWINXP}
+  if not SListFunc.Presents then raise EHPServerException.Create(SysErrorMessage(ERROR_OLD_WIN_VERSION));
   SListFunc.InitHeader(@FSList);
+  {$ELSE}
+  SList_InitHeader(@FSList);
+  {$ENDIF}
   Capacity := ACapacity;
   FItemSize := ItemSize;
 end;
 
 destructor TStructStack.Destroy;
 begin
-  if SListFunc.Presents then Clear;
+  {$IFNDEF MINWINXP}
+  if SListFunc.Presents then
+  {$ENDIF}
+  Clear;
 end;
 
 function TStructStack.Pop: Pointer;
 begin
+  {$IFNDEF MINWINXP}
   Result := SListFunc.PopSListEntry(@FSList);
+  {$ELSE}
+  Result := SList_PopSListEntry(@FSList);
+  {$ENDIF}
   if not Assigned(Result) then Result := AllocMem(FItemSize);
   if Assigned(Result) then FillChar(Result^, FItemSize, 0);
 end;
 
 function TStructStack.GetCount: integer;
 begin
+  {$IFNDEF MINWINXP}
   Result := SListFunc.QueryDepth(@FSList);
+  {$ELSE}
+  Result := SList_QueryDepth(@FSList);
+  {$ENDIF}
 end;
 
 procedure TStructStack.Push(PStruct: Pointer);
 begin
   if not Assigned(PStruct) then exit;
   if not FClosed then begin
+    {$IFNDEF MINWINXP}
     if FCapacity > SListFunc.QueryDepth(@FSList) then begin
       SListFunc.PushSListEntry(@FSList, PStruct);
       PStruct := nil;
     end;
+    {$ELSE}
+    if FCapacity > SList_QueryDepth(@FSList) then begin
+      SList_PushSListEntry(@FSList, PStruct);
+      PStruct := nil;
+    end;
+    {$ENDIF}
   end;
   if Assigned(PStruct) then FreeMem(PStruct);
 end;
@@ -1735,7 +1768,7 @@ begin
   _Release;
 end;
 
-function THPServerClientSPL.Read(const Buffers: TWsaBuf; BufCount, CompletionKey: integer): Cardinal;
+function THPServerClientSPL.ReadBuffer(const Buffers: TWsaBuf; BufCount, CompletionKey: integer): Cardinal;
 var
   P: PHPSockIOStructSPL;
 begin
@@ -1768,7 +1801,7 @@ begin
   end;
 end;
 
-function THPServerClientSPL.Write(const Buffers: TWsaBuf; BufCount, CompletionKey: integer): Cardinal;
+function THPServerClientSPL.WriteBuffer(const Buffers: TWsaBuf; BufCount, CompletionKey: integer): Cardinal;
 var
   P: PHPSockIOStructSPL;
 begin
@@ -2115,7 +2148,7 @@ begin
   end;
 end;
 
-function THPServerClient.Read(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
+function THPServerClient.ReadBuffer(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
 var
   P: PHPSockIOStruct;
   BT, Flags: Cardinal;
@@ -2151,7 +2184,7 @@ begin
   if Result <> 0 then _Release;  
 end;
 
-function THPServerClient.Write(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
+function THPServerClient.WriteBuffer(var Buffers: TWsaBuf; BufCount, CompletionKey: integer): integer;
 var
   P: PHPSockIOStruct;
   BT: Cardinal;
@@ -2738,10 +2771,11 @@ begin
   Result := WaitForSingleObject(Handle, TimeOut) = WAIT_OBJECT_0;
 end;
 
+{$IFNDEF MINWINXP}
 {$IFDEF USE_SLIST}
 initialization
   InitSListFunc(SListFunc);
-  
+{$ENDIF}
 {$ENDIF}
 
 end.
